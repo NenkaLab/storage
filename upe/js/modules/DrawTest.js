@@ -106,6 +106,9 @@ export default class DrawTest {
   setupEventListeners() {
     if (!this.canvas) return;
     
+    // 이전 리스너 제거
+    this.removeEventListeners();
+    
     // 시작 이벤트 리스너
     const startId = window.unifiedPointerEvents.addEventListener(
       this.canvas,

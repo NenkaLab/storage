@@ -1,3 +1,5 @@
+// path : js/modules/DragTest.js
+
 /**
  * 드래그 이벤트 테스트 모듈
  * 범위 제한 및 무제한 드래그 이벤트를 처리합니다.
@@ -13,11 +15,27 @@ export default class DragTest {
     this.utils = utils;
     this.listenerIds = {
       boundedDrag: null,
+      boundedDragStart: null,
       freeDrag: null,
+      freeDragStart: null,
       dragEnd: null
     };
     this.freeDragPosition = { x: 0, y: 0 };
     this.inertiaAnimation = null;
+    
+    // 드래그 관련 상태 관리
+    this.dragStates = {
+      bounded: {
+        initialElementPos: { x: 0, y: 0 },
+        grabPoint: { x: 0, y: 0 },
+        containerRect: null
+      },
+      free: {
+        initialElementPos: { x: 0, y: 0 },
+        grabPoint: { x: 0, y: 0 },
+        containerRect: null
+      }
+    };
   }
   
   /**
@@ -45,6 +63,9 @@ export default class DragTest {
    * 범위 제한 드래그 초기화
    */
   initBoundedDrag() {
+    // 이전 리스너 제거
+    this._removeEventListeners('bounded');
+    
     const boundedDraggable = document.getElementById('boundedDraggable');
     const dragBounds = document.getElementById('dragBounds');
     const logArea = document.getElementById('dragLog');
@@ -54,6 +75,9 @@ export default class DragTest {
       return;
     }
     
+    // 움직일 위치 값 저장
+    const movePos = { deltaX : 0, deltaY : 0 };
+    
     // 범위 가져오기
     const rangeX = parseInt(document.getElementById('dragRangeX')?.value || 100);
     const rangeY = parseInt(document.getElementById('dragRangeY')?.value || 100);
@@ -62,13 +86,39 @@ export default class DragTest {
     dragBounds.style.width = `${rangeX * 2}px`;
     dragBounds.style.height = `${rangeY * 2}px`;
     
-    // 드래그 리스너 등록
+    // 드래그 시작 리스너
+    this.listenerIds.boundedDragStart = window.unifiedPointerEvents.addEventListener(
+      boundedDraggable,
+      'dragstart',
+      (event) => {
+        // 로그 출력
+        this.utils.addLogEntry(
+          logArea, 
+          `범위 제한 드래그 시작 - X: ${Math.round(event.clientX)}, Y: ${Math.round(event.clientY)}`
+        );
+      },
+      { preventDefault: true }
+    );
+    
+    // 드래그 리스너 등록 - range 옵션 사용
     this.listenerIds.boundedDrag = window.unifiedPointerEvents.addEventListener(
       boundedDraggable,
       'drag',
       (event) => {
+        
+        if (!event.isOutOfBoundsX) {
+          movePos.deltaX = event.deltaX;
+        } else {
+          movePos.deltaX = event.deltaX > 0 ? rangeX : -rangeX;
+        }
+        if (!event.isOutOfBoundsY) {
+          movePos.deltaY = event.deltaY;
+        } else {
+          movePos.deltaY = event.deltaY > 0 ? rangeY : -rangeY;
+        }
+        
         // 요소 이동
-        boundedDraggable.style.transform = `translate(calc(-50% + ${event.deltaX}px), calc(-50% + ${event.deltaY}px))`;
+        boundedDraggable.style.transform = `translate(${movePos.deltaX}px, ${movePos.deltaY}px)`;
         
         // 범위 벗어남 표시
         if (event.isOutOfBounds) {
@@ -95,10 +145,14 @@ export default class DragTest {
    * 무제한 드래그 초기화
    */
   initFreeDrag() {
+    // 이전 리스너 제거
+    this._removeEventListeners('free');
+    
     const freeDraggable = document.getElementById('freeDraggable');
+    const freeDragArea = document.getElementById('freeDragArea');
     const logArea = document.getElementById('dragLog');
     
-    if (!freeDraggable || !logArea) {
+    if (!freeDraggable || !freeDragArea || !logArea) {
       console.error('드래그 테스트: 무제한 드래그 요소를 찾을 수 없습니다.');
       return;
     }
@@ -106,27 +160,72 @@ export default class DragTest {
     // 관성 효과 사용 여부
     const useInertia = document.getElementById('dragInertia')?.checked || false;
     
+    // 컨테이너 정보 초기 저장
+    this.dragStates.free.containerRect = freeDragArea.getBoundingClientRect();
+        
+    // dragstart 리스너 추가
+    this.listenerIds.freeDragStart = window.unifiedPointerEvents.addEventListener(
+      freeDraggable,
+      'dragstart',
+      (event) => {
+        // 컨테이너 정보 실시간 업데이트
+        this.dragStates.free.containerRect = freeDragArea.getBoundingClientRect();
+        
+        // 요소의 현재 위치 정보 가져오기
+        const elementRect = freeDraggable.getBoundingClientRect();
+        
+        // 컨테이너 기준 요소의 초기 위치 저장 (스크롤 오프셋 고려)
+        this.dragStates.free.initialElementPos = {
+          x: elementRect.left - this.dragStates.free.containerRect.left,
+          y: elementRect.top - this.dragStates.free.containerRect.top
+        };
+        
+        // 요소 내에서 그랩 지점 저장 (요소 내 상대 좌표)
+        this.dragStates.free.grabPoint = {
+          x: event.clientX - elementRect.left,
+          y: event.clientY - elementRect.top
+        };
+        
+        // 로그 출력
+        this.utils.addLogEntry(
+          logArea, 
+          `자유 드래그 시작 - 그랩 지점: X=${Math.round(this.dragStates.free.grabPoint.x)}px, Y=${Math.round(this.dragStates.free.grabPoint.y)}px`
+        );
+      },
+      { preventDefault: true }
+    );
+        
     // 드래그 리스너 등록
     this.listenerIds.freeDrag = window.unifiedPointerEvents.addEventListener(
       freeDraggable,
       'drag',
       (event) => {
-        // 현재 위치 업데이트
-        this.freeDragPosition.x = event.deltaX;
-        this.freeDragPosition.y = event.deltaY;
+        // 컨테이너 정보 실시간 업데이트
+        this.dragStates.free.containerRect = freeDragArea.getBoundingClientRect();
+        
+        // 새 위치 계산 (컨테이너 내 절대 위치)
+        const newPosX = event.clientX - this.dragStates.free.containerRect.left - this.dragStates.free.grabPoint.x;
+        const newPosY = event.clientY - this.dragStates.free.containerRect.top - this.dragStates.free.grabPoint.y;
+        
+        // 현재 위치 저장 (관성 효과용)
+        this.freeDragPosition.x = newPosX;
+        this.freeDragPosition.y = newPosY;
         
         // 요소 이동
-        freeDraggable.style.transform = `translate(calc(-50% + ${this.freeDragPosition.x}px), calc(-50% + ${this.freeDragPosition.y}px))`;
+        freeDraggable.style.position = 'absolute';
+        freeDraggable.style.left = `${newPosX}px`;
+        freeDraggable.style.top = `${newPosY}px`;
+        freeDraggable.style.transform = 'none'; // transform 제거
         
         // 로그 출력 (이동량이 큰 경우만)
         if (Math.abs(event.deltaX) > 10 || Math.abs(event.deltaY) > 10) {
-          const message = `자유 드래그 - X: ${Math.round(event.deltaX)}px, Y: ${Math.round(event.deltaY)}px`;
+          const message = `자유 드래그 - X: ${Math.round(newPosX)}px, Y: ${Math.round(newPosY)}px`;
           this.utils.addLogEntry(logArea, message);
         }
       },
       { preventDefault: true }
     );
-    
+        
     // 드래그 종료 리스너 (관성 효과)
     this.listenerIds.dragEnd = window.unifiedPointerEvents.addEventListener(
       freeDraggable,
@@ -169,9 +268,17 @@ export default class DragTest {
     const friction = 0.95; // 마찰 계수
     let lastTime = performance.now();
     
+    // 컨테이너 참조 유지
+    const freeDragArea = document.getElementById('freeDragArea');
+    
     const animate = (currentTime) => {
       const deltaTime = currentTime - lastTime;
       lastTime = currentTime;
+      
+      // 컨테이너 정보 실시간 업데이트 (스크롤 시에도 정확한 위치 유지)
+      if (freeDragArea) {
+        this.dragStates.free.containerRect = freeDragArea.getBoundingClientRect();
+      }
       
       // 속도 감소
       const dampingFactor = Math.pow(friction, deltaTime / 16);
@@ -182,8 +289,9 @@ export default class DragTest {
       this.freeDragPosition.x += vx * deltaTime / 1000;
       this.freeDragPosition.y += vy * deltaTime / 1000;
       
-      // 요소 이동
-      element.style.transform = `translate(calc(-50% + ${this.freeDragPosition.x}px), calc(-50% + ${this.freeDragPosition.y}px))`;
+      // 요소 이동 (transform 대신 left/top 사용)
+      element.style.left = `${this.freeDragPosition.x}px`;
+      element.style.top = `${this.freeDragPosition.y}px`;
       
       // 속도가 충분히 작아지면 정지
       if (Math.abs(vx) < 0.5 && Math.abs(vy) < 0.5) {
@@ -240,9 +348,28 @@ export default class DragTest {
     if (resetBoundedDrag) {
       resetBoundedDrag.addEventListener('click', () => {
         const boundedDraggable = document.getElementById('boundedDraggable');
-        if (boundedDraggable) {
-          boundedDraggable.style.transform = 'translate(-50%, -50%)';
+        const boundedDragArea = document.getElementById('boundedDragArea');
+        if (boundedDraggable && boundedDragArea) {
+          // 현재 컨테이너 크기 가져오기
+          const areaRect = boundedDragArea.getBoundingClientRect();
+          const elementRect = boundedDraggable.getBoundingClientRect();
+          
+          // 컨테이너 중앙에 위치
+          const centerX = (areaRect.width - elementRect.width) / 2;
+          const centerY = (areaRect.height - elementRect.height) / 2;
+          
+          boundedDraggable.style.position = 'absolute';
+          boundedDraggable.style.left = `${centerX}px`;
+          boundedDraggable.style.top = `${centerY}px`;
+          boundedDraggable.style.transform = 'none';
           boundedDraggable.style.boxShadow = '';
+          
+          // 드래그 상태 초기화
+          this.dragStates.bounded = {
+            initialElementPos: { x: centerX, y: centerY },
+            grabPoint: { x: elementRect.width / 2, y: elementRect.height / 2 },
+            containerRect: areaRect
+          };
         }
       });
     }
@@ -251,13 +378,64 @@ export default class DragTest {
     if (resetFreeDrag) {
       resetFreeDrag.addEventListener('click', () => {
         const freeDraggable = document.getElementById('freeDraggable');
-        if (freeDraggable) {
-          freeDraggable.style.transform = 'translate(-50%, -50%)';
-          this.freeDragPosition = { x: 0, y: 0 };
+        const freeDragArea = document.getElementById('freeDragArea');
+        if (freeDraggable && freeDragArea) {
+          // 현재 컨테이너 크기 가져오기
+          const areaRect = freeDragArea.getBoundingClientRect();
+          const elementRect = freeDraggable.getBoundingClientRect();
+          
+          // 컨테이너 중앙에 위치
+          const centerX = (areaRect.width - elementRect.width) / 2;
+          const centerY = (areaRect.height - elementRect.height) / 2;
+          
+          freeDraggable.style.position = 'absolute';
+          freeDraggable.style.left = `${centerX}px`;
+          freeDraggable.style.top = `${centerY}px`;
+          freeDraggable.style.transform = 'none';
+          
+          // 위치 및 드래그 상태 초기화
+          this.freeDragPosition = { x: centerX, y: centerY };
+          this.dragStates.free = {
+            initialElementPos: { x: centerX, y: centerY },
+            grabPoint: { x: elementRect.width / 2, y: elementRect.height / 2 },
+            containerRect: areaRect
+          };
+          
           this.stopInertia();
         }
       });
     }
+  }
+  
+  /**
+   * 타입지정 등록된 이벤트 리스너 제거
+   */
+  _removeEventListeners(type) {
+    let listenerIds = {};
+    if (type === 'bounded') {
+      listenerIds = {
+        boundedDrag : this.listenerIds.boundedDrag,
+        boundedDragStart : this.listenerIds.boundedDragStart
+      };
+    } else {
+      listenerIds = {
+        freeDrag : this.listenerIds.freeDrag,
+        freeDragStart : this.listenerIds.freeDragStart,
+        dragEnd : this.listenerIds.dragEnd
+      };
+    }
+    Object.keys(listenerIds).forEach(key => {
+      const id = listenerIds[key];
+      if (id !== null) {
+        window.unifiedPointerEvents.removeEventListener(id);
+        listenerIds[key] = null;
+      }
+    });
+    
+    this.listenerIds = {
+      ...this.listenerIds,
+      ...listenerIds
+    };
   }
   
   /**
@@ -272,7 +450,9 @@ export default class DragTest {
     
     this.listenerIds = {
       boundedDrag: null,
+      boundedDragStart: null,
       freeDrag: null,
+      freeDragStart: null,
       dragEnd: null
     };
   }
