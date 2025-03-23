@@ -1,3 +1,5 @@
+// path : js/ui/UIManager.js
+
 /**
  * UI 관리 모듈
  * 사용자 인터페이스 생성 및 관리를 담당합니다.
@@ -156,6 +158,10 @@ export default class UIManager {
       <div class="browser-info">
         <div id="pointerSupport"></div>
         <div id="touchSupport"></div>
+        <div id="debugMode">
+          <input type="checkbox" id="debug-mode">
+          <label for="debug-mode">디버그 모드</label>
+        </div>
       </div>
     `;
     
@@ -198,127 +204,142 @@ export default class UIManager {
   }
   
   /**
- * Drawer 드래그 기능 추가
- * 서랍의 가장자리를 드래그하여 열 수 있도록 설정합니다.
- * @private
- */
-_setupDrawerDrag() {
-  const drawer = this.elements.drawer;
-  const drawerWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--drawer-width'));
-  
-  // 드래그 상태 변수
-  let isDragging = false;
-  let startX = 0;
-  let currentTranslate = -drawerWidth;
-  
-  // start 이벤트 - 드래그 시작
-  const dragStartId = window.unifiedPointerEvents.addEventListener(
-    drawer,
-    'start',
-    (event) => {
-      // 서랍이 이미 열려있는 경우 드래그 무시
+   * Drawer 드래그 기능 추가
+   * 범위 제한 드래그를 사용하여 서랍을 열고 닫을 수 있게 합니다.
+   * @private
+   */
+  _setupDrawerDrag() {
+    const drawer = this.elements.drawer;
+    const drawerWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--drawer-width'));
+    
+    // 드래그 핸들 생성
+    const dragHandle = document.createElement('div');
+    dragHandle.className = 'drawer-drag-handle';
+    dragHandle.style.cssText = `
+      position: absolute;
+      top: 0;
+      right: -20px;
+      width: 20px;
+      height: 100%;
+      cursor: e-resize;
+      z-index: 1001;
+      background: transparent;
+    `;
+    drawer.appendChild(dragHandle);
+    
+    // 드래그 상태 변수
+    let initialDrawerState = false; // false: 닫힘, true: 열림
+    
+    // 드래그 시작 처리
+    const dragStartId = window.unifiedPointerEvents.addEventListener(
+      dragHandle,
+      'dragstart',
+      (event) => {
+        // 현재 서랍 상태 저장
+        initialDrawerState = drawer.classList.contains('open');
+        
+        // 기본 동작 방지
+        event.preventDefault();
+      },
+      { preventDefault: true }
+    );
+
+    // 드래그 핸들 드래그 처리
+    const dragId = window.unifiedPointerEvents.addEventListener(
+      dragHandle,
+      'drag',
+      (event) => {
+        // 현재 서랍 상태에 따라 x축 이동값 조정
+        let moveX = event.deltaX;
+        
+        // 서랍이 열려있으면 오른쪽으로 드래그할 때 음수값으로, 닫혀있으면 왼쪽으로 드래그할 때 양수값으로
+        if (initialDrawerState) {
+          moveX = -moveX;
+        }
+        
+        // 이동 범위 계산 (서랍 너비를 기준으로)
+        let translateX = initialDrawerState 
+          ? Math.min(0, Math.max(-drawerWidth, -moveX)) // 열린 상태에서는 0 ~ -drawerWidth
+          : Math.max(-drawerWidth, Math.min(0, -drawerWidth + moveX)); // 닫힌 상태에서는 -drawerWidth ~ 0
+        
+        // 스타일 직접 적용
+        drawer.style.transform = `translateX(${translateX}px)`;
+        drawer.style.transition = 'none';
+        
+        // 오버레이 투명도 조절
+        const progress = 1 + (translateX / drawerWidth);
+        this.elements.drawerOverlay.style.opacity = progress.toString();
+        this.elements.drawerOverlay.style.visibility = progress > 0 ? 'visible' : 'hidden';
+        
+        // 기본 동작 방지
+        event.preventDefault();
+      },
+      { 
+        preventDefault: true, 
+        range: initialDrawerState ? { x: [0, drawerWidth] } : { x: [-drawerWidth, 0] },
+        keepState: true
+      }
+    );
+    
+    // 드래그 종료 처리
+    const dragEndId = window.unifiedPointerEvents.addEventListener(
+      dragHandle,
+      'dragend',
+      (event) => {
+        // 트랜지션 효과 복원
+        drawer.style.transition = '';
+        drawer.style.transform = '';
+        
+        // 종료 시점의 위치에 따라 서랍 열기/닫기 결정
+        let translateX = initialDrawerState 
+          ? Math.min(0, Math.max(-drawerWidth, -event.deltaX)) 
+          : Math.max(-drawerWidth, Math.min(0, -drawerWidth + event.deltaX));
+        
+        // 절반 이상 이동했으면 상태 변경
+        const threshold = -drawerWidth / 2;
+        
+        if (translateX < threshold) {
+          this.closeDrawer();
+        } else {
+          this.openDrawer();
+        }
+        
+        // 오버레이 스타일 초기화
+        this.elements.drawerOverlay.style.opacity = '';
+        this.elements.drawerOverlay.style.visibility = '';
+        
+        // 기본 동작 방지
+        event.preventDefault();
+      },
+      { preventDefault: true }
+    );
+    
+    // 리스너 ID 저장
+    this._drawerDragListenerIds = [
+      dragStartId,
+      dragId,
+      dragEndId
+    ];
+
+    // 서랍 오른쪽 가장자리 클릭으로 서랍 열기 기능 추가
+    const edgeWidth = 20;
+    const bodyClickListener = (e) => {
       if (drawer.classList.contains('open')) return;
       
-      // 오른쪽 가장자리 25px 영역에서만 드래그 시작 허용
-      const rect = drawer.getBoundingClientRect();
-      if (event.clientX > rect.right || event.clientX < rect.right - 25) return;
+      const drawerRect = drawer.getBoundingClientRect();
+      const clickX = e.clientX;
       
-      isDragging = true;
-      startX = event.clientX;
-      currentTranslate = -drawerWidth;
-      
-      // 드래그 중 스타일 적용
-      drawer.classList.add('dragging');
-      
-      // 기본 동작 방지 (스크롤 등)
-      event.preventDefault();
-    },
-    { preventDefault: true }
-  );
-  
-  // move 이벤트 - 드래그 중
-  const dragMoveId = window.unifiedPointerEvents.addEventListener(
-    document.body,
-    'move',
-    (event) => {
-      if (!isDragging) return;
-      
-      // 드래그 거리 계산
-      const deltaX = event.clientX - startX;
-      
-      // 서랍이 닫힌 상태에서 오른쪽으로만 드래그 가능
-      if (deltaX < 0) {
-        currentTranslate = -drawerWidth;
-      } else {
-        // 최대 드래그 거리는 서랍 너비까지
-        currentTranslate = Math.min(0, -drawerWidth + deltaX);
-      }
-      
-      // 서랍 위치 업데이트
-      drawer.style.transform = `translateX(${currentTranslate}px)`;
-      
-      // 오버레이 투명도 계산 (드래그 진행도에 따라)
-      const progress = 1 + (currentTranslate / drawerWidth);
-      this.elements.drawerOverlay.style.opacity = progress.toString();
-      
-      // 드래그 중 오버레이 표시
-      if (progress > 0) {
-        this.elements.drawerOverlay.style.visibility = 'visible';
-      }
-      
-      event.preventDefault();
-    },
-    { preventDefault: true }
-  );
-  
-  // end 이벤트 - 드래그 종료
-  const dragEndId = window.unifiedPointerEvents.addEventListener(
-    document.body,
-    'end',
-    (event) => {
-      if (!isDragging) return;
-      
-      isDragging = false;
-      drawer.classList.remove('dragging');
-      
-      // 드래그 거리에 따라 서랍 열기/닫기 결정
-      // 50% 이상 드래그했으면 열기, 그렇지 않으면 닫기
-      if (currentTranslate > -drawerWidth * 0.5) {
+      // 닫힌 서랍의 오른쪽 가장자리 부근 클릭 감지
+      if (clickX >= drawerRect.right - edgeWidth && clickX <= drawerRect.right + edgeWidth) {
         this.openDrawer();
-      } else {
-        this.closeDrawer();
       }
-      
-      // 스타일 초기화
-      drawer.style.transform = '';
-      this.elements.drawerOverlay.style.opacity = '';
-    }
-  );
-  
-  // cancel 이벤트 - 드래그 취소
-  const dragCancelId = window.unifiedPointerEvents.addEventListener(
-    document.body,
-    'cancel',
-    () => {
-      if (!isDragging) return;
-      
-      isDragging = false;
-      drawer.classList.remove('dragging');
-      drawer.style.transform = '';
-      this.elements.drawerOverlay.style.opacity = '';
-      
-      this.closeDrawer();
-    }
-  );
-  
-  // 리스너 ID 저장
-  this._drawerDragListenerIds = [
-    dragStartId,
-    dragMoveId,
-    dragEndId,
-    dragCancelId
-  ];
-}
+    };
+    
+    document.body.addEventListener('click', bodyClickListener);
+    
+    // body 클릭 이벤트 리스너 정리 위해 저장
+    this._bodyClickListener = bodyClickListener;
+  }
   
   /**
    * 브라우저 환경 정보 표시
@@ -332,6 +353,9 @@ _setupDrawerDrag() {
       `PointerEvent 지원: ${pointerSupport ? '예' : '아니오'}`;
     document.getElementById('touchSupport').textContent = 
       `터치 지원: ${touchSupport ? '예' : '아니오'}`;
+    document.getElementById('debug-mode').addEventListener('change', (e) => {
+      window.unifiedPointerEvents.setDebugMode(e.target.checked);
+    });
   }
   
   /**
