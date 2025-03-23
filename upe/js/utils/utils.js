@@ -95,6 +95,8 @@ export default class Utils {
       case 'dragend': return '드래그 종료';
       case 'gotcapture': return '캡처 획득';
       case 'lostcapture': return '캡처 해제';
+      case 'rotate': return '회전';
+      case 'pinchzoom': return '핀치줌';
       default: return type;
     }
   }
@@ -257,5 +259,158 @@ export default class Utils {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+  
+  /**
+   * 두 점 사이의 각도를 계산합니다 (도 단위)
+   * @param {number} x1 - 첫 번째 점의 X 좌표
+   * @param {number} y1 - 첫 번째 점의 Y 좌표
+   * @param {number} x2 - 두 번째 점의 X 좌표
+   * @param {number} y2 - 두 번째 점의 Y 좌표
+   * @return {number} 각도 (0-360도)
+   */
+  calculateAngle(x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    
+    // 각도 범위를 0-360으로 조정
+    if (angle < 0) {
+      angle += 360;
+    }
+    
+    return angle;
+  }
+  
+  /**
+   * 각도를 정규화합니다 (0-360도)
+   * @param {number} angle - 정규화할 각도
+   * @return {number} 정규화된 각도 (0-360도)
+   */
+  normalizeAngle(angle) {
+    let normalized = angle % 360;
+    if (normalized < 0) {
+      normalized += 360;
+    }
+    return normalized;
+  }
+  
+  /**
+   * 두 점 사이의 거리를 계산합니다
+   * @param {number} x1 - 첫 번째 점의 X 좌표
+   * @param {number} y1 - 첫 번째 점의 Y 좌표
+   * @param {number} x2 - 두 번째 점의 X 좌표
+   * @param {number} y2 - 두 번째 점의 Y 좌표
+   * @return {number} 거리
+   */
+  calculateDistance(x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  
+  /**
+   * 이동 거리와 시간으로 속도를 계산합니다
+   * @param {number} distance - 이동 거리
+   * @param {number} timeMs - 소요 시간 (밀리초)
+   * @return {number} 속도 (픽셀/초)
+   */
+  calculateVelocity(distance, timeMs) {
+    if (timeMs <= 0) return 0;
+    return distance / (timeMs / 1000); // 초당 픽셀 단위
+  }
+  
+  /**
+   * 회전 각도 변화량 계산
+   * @param {number} prevAngle - 이전 각도
+   * @param {number} currentAngle - 현재 각도
+   * @return {number} 각도 변화량
+   */
+  calculateAngleDelta(prevAngle, currentAngle) {
+    // 두 각도의 차이를 구함 (0-360도 범위에서)
+    let delta = currentAngle - prevAngle;
+    
+    // 최단 경로로 회전하기 위한 조정
+    if (delta > 180) {
+      delta -= 360;
+    } else if (delta < -180) {
+      delta += 360;
+    }
+    
+    return delta;
+  }
+  
+  /**
+   * 배율 변화량 계산
+   * @param {number} prevDistance - 이전 거리
+   * @param {number} currentDistance - 현재 거리
+   * @return {number} 배율 변화량
+   */
+  calculateScaleFactor(prevDistance, currentDistance) {
+    if (prevDistance <= 0) return 1.0;
+    return currentDistance / prevDistance;
+  }
+  
+  /**
+   * 최소, 최대 범위 내로 값을 제한합니다
+   * @param {number} value - 대상 값
+   * @param {number} min - 최소값
+   * @param {number} max - 최대값
+   * @return {number} 제한된 값
+   */
+  clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+  
+  /**
+   * 회전 행렬을 사용하여 점을 회전합니다
+   * @param {number} x - 회전할 점의 X 좌표
+   * @param {number} y - 회전할 점의 Y 좌표
+   * @param {number} centerX - 회전 중심의 X 좌표
+   * @param {number} centerY - 회전 중심의 Y 좌표
+   * @param {number} angle - 회전 각도 (도 단위)
+   * @return {Object} 회전된 점의 좌표 {x, y}
+   */
+  rotatePoint(x, y, centerX, centerY, angle) {
+    // 회전 중심을 원점으로 이동
+    const translatedX = x - centerX;
+    const translatedY = y - centerY;
+    
+    // 라디안으로 변환
+    const radians = angle * Math.PI / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    
+    // 회전 변환
+    const rotatedX = translatedX * cos - translatedY * sin;
+    const rotatedY = translatedX * sin + translatedY * cos;
+    
+    // 원래 위치로 이동
+    return {
+      x: rotatedX + centerX,
+      y: rotatedY + centerY
+    };
+  }
+  
+  /**
+   * 선형 보간법 (Linear Interpolation)
+   * @param {number} start - 시작값
+   * @param {number} end - 종료값
+   * @param {number} t - 보간 계수 (0-1)
+   * @return {number} 보간된 값
+   */
+  lerp(start, end, t) {
+    return start + (end - start) * this.clamp(t, 0, 1);
+  }
+  
+  /**
+   * 부드러운 감속 계수 계산 (Smooth Damping Factor)
+   * @param {number} factor - 감속 계수 (0-1)
+   * @param {number} deltaTime - 경과 시간 (초 단위)
+   * @param {number} fps - 기준 프레임 속도
+   * @return {number} 시간에 따른 감속 계수
+   */
+  smoothDampingFactor(factor, deltaTime, fps = 60) {
+    return Math.pow(factor, deltaTime * fps);
   }
 }
