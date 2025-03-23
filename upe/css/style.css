@@ -1,3 +1,5 @@
+/* path : css/style.css */
+
 :root {
   /* 색상 */
   --primary: #6750a4;
@@ -598,6 +600,7 @@ a {
 .bounded-drag-container, .free-drag-container {
   position: relative;
   min-height: 250px;
+  overflow: hidden; /* 추가: 요소가 컨테이너 밖으로 넘치지 않도록 */
 }
 
 .drag-bounds {
@@ -612,9 +615,6 @@ a {
 
 .draggable-element {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
   width: 100px;
   height: 100px;
   background-color: var(--primary);
@@ -629,6 +629,7 @@ a {
   touch-action: none;
   transition: box-shadow var(--transition-fast);
   z-index: 1;
+  /* transform 제거 및 초기 위치 설정은 JavaScript에서 처리 */
 }
 
 .draggable-element:active {
@@ -711,6 +712,7 @@ input[type="color"] {
   border-radius: var(--radius-md);
   padding: var(--spacing-md);
   margin-bottom: var(--spacing-lg);
+  overflow: hidden; /* 추가: 컨테이너 밖으로 요소가 넘치지 않도록 */
 }
 
 .capture-instruction {
@@ -738,9 +740,7 @@ input[type="color"] {
   user-select: none;
   touch-action: none;
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  /* transform 제거 및 초기 위치 설정은 JavaScript에서 처리 */
 }
 
 .capture-element:active {
@@ -878,6 +878,260 @@ input[type="color"] {
   background-color: var(--error);
 }
 
+/* 핀치 줌 테스트 */
+.pinch-zoom-container {
+  padding: var(--spacing-md);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 350px;
+}
+
+.image-upload-container {
+  margin-bottom: var(--spacing-md);
+  display: flex;
+  justify-content: center;
+}
+
+.upload-label {
+  background-color: var(--primary);
+  color: var(--on-primary);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.upload-label:hover {
+  background-color: var(--primary-dark);
+}
+
+.upload-label .material-symbols-outlined {
+  font-size: var(--font-size-md);
+}
+
+.image-container {
+  width: 100%;
+  height: 200px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  position: relative;
+  background-color: white;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--surface-variant);
+}
+
+.test-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transform-origin: center;
+  transition: transform 0.1s ease;
+}
+
+.zoom-info {
+  margin-top: var(--spacing-md);
+  font-size: var(--font-size-sm);
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+/* 회전 테스트 */
+.rotate-container {
+  padding: var(--spacing-md);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 350px;
+}
+
+.rotate-target {
+  width: 150px;
+  height: 150px;
+  background-color: var(--primary-light);
+  border-radius: var(--radius-circle);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary-dark);
+  user-select: none;
+  transition: transform 0.1s ease;
+  transform-origin: center;
+  text-align: center;
+  padding: var(--spacing-md);
+}
+
+.rotate-target .material-symbols-outlined {
+  font-size: 36px;
+  margin-bottom: var(--spacing-xs);
+}
+
+.rotate-info {
+  margin-top: var(--spacing-md);
+  font-size: var(--font-size-sm);
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+/* fling 스크롤 테스트 */
+.fling-scroll-container {
+  position: relative;
+  height: 300px;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background-color: var(--surface-dark);
+}
+
+.scroll-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  will-change: transform;
+  transform: translateY(0);
+  touch-action: none;
+}
+
+.scroll-item {
+  height: 60px;
+  background-color: var(--primary-light);
+  margin: var(--spacing-xs);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary-dark);
+  font-weight: 500;
+  border-left: 4px solid var(--primary);
+}
+
+.scroll-item:nth-child(even) {
+  background-color: var(--secondary-light);
+  border-left-color: var(--secondary);
+  color: var(--secondary-dark);
+}
+
+.scroll-indicator {
+  position: absolute;
+  right: 4px;
+  top: 0;
+  width: 4px;
+  height: 30px;
+  background-color: var(--primary);
+  border-radius: var(--radius-sm);
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+}
+
+.scroll-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--secondary);
+}
+
+#scrollPosition, #scrollVelocity {
+  font-weight: bold;
+  color: var(--primary);
+  font-family: monospace;
+}
+
+/* 타이거 게임 */
+.game-container {
+  padding: var(--spacing-md);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  min-height: 350px;
+  background-color: var(--surface-dark);
+  overflow: hidden;
+}
+
+.game-instruction {
+  position: absolute;
+  top: var(--spacing-md);
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: var(--on-surface-variant);
+  font-size: var(--font-size-sm);
+  z-index: 1;
+}
+
+.game-character {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  cursor: grab;
+  touch-action: none;
+}
+
+.game-character .material-symbols-outlined {
+  font-size: 40px;
+  color: var(--primary);
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.2));
+}
+
+.game-target {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  z-index: 1;
+}
+
+.game-target .material-symbols-outlined {
+  font-size: 30px;
+  color: var(--tertiary);
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.2));
+}
+
+.game-status {
+  position: absolute;
+  bottom: var(--spacing-md);
+  left: 0;
+  right: 0;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+#gameStatus {
+  font-weight: 500;
+  color: var(--primary);
+}
+
+.game-score-container {
+  font-weight: 700;
+  color: var(--secondary);
+}
+
 /* 유틸리티 클래스 */
 .hidden {
   display: none !important;
@@ -900,6 +1154,26 @@ input[type="color"] {
   .control-panel {
     flex-direction: column;
     align-items: stretch;
+  }
+  
+  .pinch-zoom-container,
+  .rotate-container,
+  .game-container {
+    min-height: 250px;
+  }
+  
+  .image-container {
+    height: 150px;
+  }
+  
+  .rotate-target {
+    width: 120px;
+    height: 120px;
+  }
+  
+  .rotate-target .material-symbols-outlined,
+  .game-character .material-symbols-outlined {
+    font-size: 28px;
   }
 }
 
