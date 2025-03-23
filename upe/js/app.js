@@ -78,6 +78,13 @@ class App {
 }
 
 // 앱 인스턴스 생성 및 시작
-document.addEventListener('DOMContentLoaded', () => {
+function startApp() {
   window.app = new App();
-});
+}
+
+// 이미 페이지가 로딩되었는지 확인
+if (document.readyState !== "loading") {
+  startApp();
+} else {
+  document.addEventListener("DOMContentLoaded", startApp);
+}
