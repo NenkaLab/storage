@@ -9,7 +9,7 @@ import DragTest from './modules/DragTest.js';
 import DrawTest from './modules/DrawTest.js';
 import CaptureTest from './modules/CaptureTest.js';
 import PerformanceTest from './modules/PerformanceTest.js';
-import Utils from './utils/Utils.js';
+import Utils from './utils/utils.js';
 
 class App {
   constructor() {
