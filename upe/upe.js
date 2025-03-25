@@ -1,38 +1,49 @@
 /**
- * 클릭, 터치, 펜 입력을 통합적으로 처리하는 개선된 이벤트 매니저
- * 모든 입력 방식에 대해 일관된 이벤트 핸들링을 제공합니다.
- * 롱클릭, 더블클릭, 스와이프, 드래그, 플링, 회전, 핀치줌 기능을 지원합니다.
- * setPointerCapture/releasePointerCapture API를 활용하여 향상된 제어 기능을 제공합니다.
- * version 1.3.1
+ * UnifiedPointerEvents - Enhanced Version
+ * A unified event manager for mouse, touch, and pen inputs
+ * Provides consistent event handling across input methods with advanced gesture recognition
+ * Supports longclick, doubleclick, swipe, drag, fling, rotate, pinchzoom and more
+ * Uses setPointerCapture/releasePointerCapture API for improved control
+ * version 1.4.0
  */
 class UnifiedPointerEvents {
   constructor() {
-    // 이벤트 리스너 관리
-    this.eventListeners = new Map(); // id -> 리스너 정보
+    // Event listener management
+    this.eventListeners = new Map(); // id -> listener info
     this.listenerCounter = 0;
     
-    // 디버그 모드 (콘솔 로그 활성화/비활성화)
+    // Debug mode (enables/disables console logging)
     this.debugMode = false;
     
-    // 기본 설정값
+    // Feature detection for better browser compatibility
+    this.features = {
+      pointerEvents: 'PointerEvent' in window,
+      touch: 'ontouchstart' in window,
+      mouse: 'onmousedown' in window,
+      passiveEvents: this._checkPassiveEventSupport(),
+      pointerCapture: 'PointerEvent' in window && HTMLElement.prototype.hasOwnProperty('setPointerCapture')
+    };
+    
+    // Default settings
     this.defaults = {
       longClickDelay: 500,
       doubleClickDelay: 300,
       swipeThreshold: 50,
       swipeTimeout: 300,
-      flingMinVelocity: 600,   // 플링 최소 속도 (px/s)
-      flingDecay: 0.95,        // 플링 감속 계수
-      usePointerCapture: true, // setPointerCapture 사용 여부 기본값
-      touchOffsetX: 0,         // 터치 이벤트의 X축 오프셋
-      touchOffsetY: -20,       // 터치 이벤트의 Y축 오프셋 (위쪽으로 20px)
-      rotateStepDeg: 5,        // 회전 단계 (도)
-      pinchZoomStep: 0.05,     // 핀치줌 단계
-      minScale: 0.1,           // 최소 배율
-      maxScale: 10.0,          // 최대 배율
-      touchFingerDistance: 30  // 멀티터치 최소 거리(px)
+      flingMinVelocity: 600,    // Minimum velocity for fling (px/s)
+      flingDecay: 0.95,         // Fling deceleration factor
+      usePointerCapture: true,  // Default value for setPointerCapture usage
+      touchOffsetX: 0,          // Touch event X-axis offset
+      touchOffsetY: -20,        // Touch event Y-axis offset (20px up)
+      rotateStepDeg: 5,         // Rotation step (degrees)
+      pinchZoomStep: 0.05,      // Pinch zoom step
+      minScale: 0.1,            // Minimum scale factor
+      maxScale: 10.0,           // Maximum scale factor
+      touchFingerDistance: 30,  // Minimum distance for multi-touch (px)
+      throttleMs: 16            // Default throttle value for high-frequency events (≈60fps)
     };
     
-    // 이벤트 매핑
+    // Event type mapping for different input methods
     this._eventMapping = {
       mouse: {
         'start': 'mousedown',
@@ -56,22 +67,49 @@ class UnifiedPointerEvents {
       }
     };
     
-    // 지원하는 이벤트 타입
+    // Supported event types
     this._validEventTypes = new Set([
       'start', 'move', 'end', 'cancel', 
       'longclick', 'doubleclick', 'swipe', 'fling',
       'dragstart', 'drag', 'dragend',
       'gotcapture', 'lostcapture',
-      'rotate', 'pinchzoom' // 제스처 이벤트
+      'rotate', 'pinchzoom' // Gesture events
     ]);
     
-    // 활성 멀티터치 추적
+    // Active multi-touch tracking
     this._activeTouches = new Map(); // touchId -> touchInfo
+    
+    this._debug('UnifiedPointerEvents initialized', this.features);
   }
 
   /**
-   * 내부 로깅을 위한 디버그 메서드
+   * Checks if passive event listeners are supported
    * @private
+   * @returns {boolean} Whether passive events are supported
+   */
+  _checkPassiveEventSupport() {
+    let supportsPassive = false;
+    try {
+      // Create options object with a getter for passive property
+      const opts = Object.defineProperty({}, 'passive', {
+        get: function() {
+          supportsPassive = true;
+          return true;
+        }
+      });
+      // Add a dummy event listener with the options
+      window.addEventListener('testPassive', null, opts);
+      window.removeEventListener('testPassive', null, opts);
+    } catch (e) {
+      // Passive events not supported
+    }
+    return supportsPassive;
+  }
+
+  /**
+   * Internal logging method for debugging
+   * @private
+   * @param {...any} args - Arguments to log
    */
   _debug(...args) {
     if (this.debugMode) {
@@ -80,40 +118,57 @@ class UnifiedPointerEvents {
   }
 
   /**
-   * 요소에 통합 포인터 이벤트 리스너를 추가합니다.
-   * @param {HTMLElement} element - 이벤트 리스너를 추가할 요소
-   * @param {string} eventType - 이벤트 유형
-   * @param {Function} callback - 이벤트 발생 시 호출될 콜백 함수
-   * @param {Object} options - 이벤트 리스너 옵션
-   * @returns {number} 이벤트 리스너 식별자
+   * Generates a unique listener ID
+   * @private
+   * @returns {string} Unique listener ID
+   */
+  _generateListenerId() {
+    const timestamp = Date.now();
+    const random = Math.floor(Math.random() * 10000);
+    return `${timestamp}-${random}-${this.listenerCounter++}`;
+  }
+
+  /**
+   * Adds a unified pointer event listener to an element
+   * @param {HTMLElement} element - Element to attach the event listener
+   * @param {string} eventType - Event type
+   * @param {Function} callback - Callback function
+   * @param {Object} options - Event listener options
+   * @returns {string} Event listener identifier
    */
   addEventListener(element, eventType, callback, options = {}) {
+    // Validate required parameters
     if (!element || !eventType || !callback) {
-      throw new Error('필수 매개변수가 누락되었습니다: element, eventType, callback');
+      throw new Error('Missing required parameters: element, eventType, callback');
     }
 
+    // Validate event type
     if (!this._validEventTypes.has(eventType)) {
-      throw new Error(`지원되지 않는 이벤트 유형입니다: ${eventType}`);
+      throw new Error(`Unsupported event type: ${eventType}`);
     }
     
-    // 요소, 이벤트 타입, 콜백 함수 조합이 이미 등록되어 있는지 확인
+    // Check for existing identical listener
     let existingListenerId = this._findExistingListener(element, eventType, callback);
     if (existingListenerId !== null) {
-      this._debug(`중복 이벤트 리스너 감지: element=${element}, eventType=${eventType}, 기존 리스너 ID 반환: ${existingListenerId}`);
+      this._debug(`Duplicate event listener detected: element=${element}, eventType=${eventType}, returning existing listener ID: ${existingListenerId}`);
       return existingListenerId;
     }
 
-    const listenerId = this.listenerCounter++;
+    // Generate unique listener ID
+    const listenerId = this._generateListenerId();
+    
+    // Create listener info object
     const listenerInfo = { 
       element, 
       eventType, 
       callback, 
-      options, 
+      options: { ...options }, // Clone options to avoid external modification
       nativeListeners: [],
-      state: {} // 이벤트 상태를 저장할 객체 (리스너별 독립 상태)
+      state: {}, // Object to store event state (independent for each listener)
+      registrationTime: Date.now()
     };
 
-    // 제스처 이벤트와 드래그 이벤트는 다른 방식으로 처리
+    // Setup event handlers based on event type
     if (['longclick', 'doubleclick', 'swipe', 'fling', 'rotate', 'pinchzoom'].includes(eventType)) {
       this._setupGestureEvents(element, eventType, callback, options, listenerId, listenerInfo);
     } 
@@ -124,24 +179,27 @@ class UnifiedPointerEvents {
       this._setupCaptureEvents(element, eventType, callback, options, listenerId, listenerInfo);
     }
     else {
-      // 기본 이벤트 핸들러 설정
+      // Setup basic events
       this._setupBasicEvents(element, eventType, callback, options, listenerId, listenerInfo);
     }
 
+    // Save listener info
     this.eventListeners.set(listenerId, listenerInfo);
+    this._debug(`Added ${eventType} listener to ${element.tagName || 'element'}, ID: ${listenerId}`);
+    
     return listenerId;
   }
 
   /**
-   * 이미 등록된 동일한 리스너가 있는지 확인합니다.
+   * Finds an existing identical listener
    * @private
-   * @param {HTMLElement} element - 이벤트 대상 요소
-   * @param {string} eventType - 이벤트 유형
-   * @param {Function} callback - 콜백 함수
-   * @returns {number|null} 기존 리스너 ID 또는 없으면 null
+   * @param {HTMLElement} element - Event target element
+   * @param {string} eventType - Event type
+   * @param {Function} callback - Callback function
+   * @returns {string|null} Existing listener ID or null
    */
   _findExistingListener(element, eventType, callback) {
-    // 모든 리스너를 순회하며 동일한 조합이 있는지 확인
+    // Check all listeners for a matching combination
     for (const [id, info] of this.eventListeners.entries()) {
       if (info.element === element && 
           info.eventType === eventType && 
@@ -153,62 +211,95 @@ class UnifiedPointerEvents {
   }
 
   /**
-   * 이벤트 리스너 등록 헬퍼 함수
+   * Helper function to register event listeners
    * @private
-   * @param {HTMLElement} element - 이벤트 대상 요소
-   * @param {boolean} hasPointerEvents - 포인터 이벤트 지원 여부
-   * @param {Array} eventMappings - 이벤트 매핑 배열 [{type, handler}]
-   * @param {Object} options - 이벤트 리스너 옵션
-   * @param {Object} listenerInfo - 리스너 정보
+   * @param {HTMLElement} element - Event target element
+   * @param {boolean} hasPointerEvents - Whether pointer events are supported
+   * @param {Array} eventMappings - Event mapping array [{type, handler}]
+   * @param {Object} options - Event listener options
+   * @param {Object} listenerInfo - Listener info object
    */
   _registerEventListeners(element, hasPointerEvents, eventMappings, options, listenerInfo) {
-    if (hasPointerEvents) {
-      eventMappings.forEach(mapping => {
-        const pointerType = this._eventMapping.pointer[mapping.type] || mapping.type;
-        element.addEventListener(pointerType, mapping.handler, options);
-        listenerInfo.nativeListeners.push({
-          type: pointerType,
-          handler: mapping.handler,
-          element,
-          options
+    try {
+      // Adjust options for passive vs preventDefault
+      const listenerOptions = { ...options };
+      if (options.preventDefault && this.features.passiveEvents) {
+        listenerOptions.passive = false;
+      }
+      
+      if (hasPointerEvents) {
+        // Register pointer events
+        eventMappings.forEach(mapping => {
+          try {
+            const pointerType = this._eventMapping.pointer[mapping.type] || mapping.type;
+            element.addEventListener(pointerType, mapping.handler, listenerOptions);
+            listenerInfo.nativeListeners.push({
+              type: pointerType,
+              handler: mapping.handler,
+              element,
+              options: listenerOptions
+            });
+            this._debug(`Added pointer event listener: ${pointerType}`);
+          } catch (error) {
+            this._debug(`Failed to register pointer event: ${error.message}`);
+          }
         });
-      });
-    } else {
-      eventMappings.forEach(mapping => {
-        // 터치 이벤트
-        const touchType = this._eventMapping.touch[mapping.type] || mapping.type;
-        element.addEventListener(touchType, mapping.handler, options);
-        listenerInfo.nativeListeners.push({
-          type: touchType,
-          handler: mapping.handler,
-          element,
-          options
-        });
+      } else {
+        // Register touch events
+        if (this.features.touch) {
+          eventMappings.forEach(mapping => {
+            try {
+              const touchType = this._eventMapping.touch[mapping.type] || mapping.type;
+              element.addEventListener(touchType, mapping.handler, listenerOptions);
+              listenerInfo.nativeListeners.push({
+                type: touchType,
+                handler: mapping.handler,
+                element,
+                options: listenerOptions
+              });
+              this._debug(`Added touch event listener: ${touchType}`);
+            } catch (error) {
+              this._debug(`Failed to register touch event: ${error.message}`);
+            }
+          });
+        }
         
-        // 마우스 이벤트
-        const mouseType = this._eventMapping.mouse[mapping.type] || mapping.type;
-        element.addEventListener(mouseType, mapping.handler, options);
-        listenerInfo.nativeListeners.push({
-          type: mouseType,
-          handler: mapping.handler,
-          element,
-          options
-        });
-      });
+        // Register mouse events
+        if (this.features.mouse) {
+          eventMappings.forEach(mapping => {
+            try {
+              const mouseType = this._eventMapping.mouse[mapping.type] || mapping.type;
+              element.addEventListener(mouseType, mapping.handler, listenerOptions);
+              listenerInfo.nativeListeners.push({
+                type: mouseType,
+                handler: mapping.handler,
+                element,
+                options: listenerOptions
+              });
+              this._debug(`Added mouse event listener: ${mouseType}`);
+            } catch (error) {
+              this._debug(`Failed to register mouse event: ${error.message}`);
+            }
+          });
+        }
+      }
+    } catch (error) {
+      this._debug(`Event registration failed: ${error.message}`);
     }
   }
 
   /**
-   * 기본 이벤트 리스너를 설정합니다.
+   * Sets up basic event listeners
    * @private
    */
   _setupBasicEvents(element, eventType, callback, options, listenerId, listenerInfo) {
-    const hasPointerEvents = 'PointerEvent' in window;
+    const hasPointerEvents = this.features.pointerEvents;
     
-    // 이벤트 핸들러
+    // Event handler
     const handleEvent = (event) => {
-      // 입력 장치 필터링
+      // Input device filtering
       if (eventType === 'start') {
+        // Apply device filtering if specified
         if ((options.penOnly && event.pointerType !== 'pen') ||
             (options.touchOnly && event.pointerType !== 'touch') ||
             (options.mouseOnly && event.pointerType !== 'mouse')) {
@@ -216,106 +307,155 @@ class UnifiedPointerEvents {
         }
       }
       
+      // Prevent default behavior if requested
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('Failed to prevent default:', e.message);
+        }
       }
       
+      // Call the callback with the unified event
       callback(this._createUnifiedEvent(event, eventType));
     };
     
-    // 리스너 옵션 설정
-    const listenerOptions = {
-      ...options,
-      passive: options.preventDefault ? false : options.passive
-    };
-    
-    // 이벤트 리스너 등록 헬퍼 사용
+    // Register event listeners
     this._registerEventListeners(
       element, 
       hasPointerEvents, 
       [{ type: eventType, handler: handleEvent }], 
-      listenerOptions, 
+      options, 
       listenerInfo
     );
   }
 
   /**
-   * 포인터 캡처 이벤트 리스너를 설정합니다.
+   * Sets up pointer capture event listeners
    * @private
    */
   _setupCaptureEvents(element, eventType, callback, options, listenerId, listenerInfo) {
-    if (!('PointerEvent' in window)) {
-      this._debug('이 브라우저는 포인터 캡처 이벤트를 지원하지 않습니다');
+    // Check if pointer events are supported
+    if (!this.features.pointerCapture) {
+      this._debug('This browser does not support pointer capture events');
       return;
     }
     
+    // Map event type to native event
     const captureEventType = eventType === 'gotcapture' 
       ? 'gotpointercapture' 
       : 'lostpointercapture';
     
+    // Capture event handler
     const captureHandler = (event) => {
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('Failed to prevent default:', e.message);
+        }
       }
       
+      // Call the callback with the unified event
       callback(this._createUnifiedEvent(event, eventType));
     };
     
-    const listenerOptions = {
-      ...options,
-      passive: options.preventDefault ? false : options.passive
-    };
+    // Set listener options
+    const listenerOptions = { ...options };
+    if (options.preventDefault && this.features.passiveEvents) {
+      listenerOptions.passive = false;
+    }
     
-    element.addEventListener(captureEventType, captureHandler, listenerOptions);
-    
-    listenerInfo.nativeListeners.push({ 
-      type: captureEventType, 
-      handler: captureHandler, 
-      element,
-      options: listenerOptions
-    });
+    // Add event listener
+    try {
+      element.addEventListener(captureEventType, captureHandler, listenerOptions);
+      listenerInfo.nativeListeners.push({ 
+        type: captureEventType, 
+        handler: captureHandler, 
+        element,
+        options: listenerOptions
+      });
+      this._debug(`Added ${captureEventType} listener`);
+    } catch (error) {
+      this._debug(`Failed to add ${captureEventType} listener:`, error.message);
+    }
   }
 
   /**
-   * 통합된 이벤트 객체를 생성합니다.
+   * Creates a unified event object
    * @private
+   * @param {Event} originalEvent - Original browser event
+   * @param {string} eventType - Unified event type
+   * @param {Object} additionalData - Additional event data
+   * @returns {Object} Unified event object
    */
   _createUnifiedEvent(originalEvent, eventType, additionalData = {}) {
-    // 이벤트 데이터 추출
+    // Extract event data based on event type
     let pointerType, pointerId, clientX, clientY, pageX, pageY, isPrimary, pressure;
     
+    // Handle touch events
     if (originalEvent.type.startsWith('touch') && originalEvent.touches) {
       pointerType = 'touch';
-      const touch = originalEvent.type === 'touchend' || originalEvent.type === 'touchcancel' 
-        ? (originalEvent.changedTouches[0] || {}) 
-        : (originalEvent.touches[0] || {});
       
+      // Find the correct touch object
+      let touch;
+      
+      if (originalEvent.type === 'touchend' || originalEvent.type === 'touchcancel') {
+        // For touchend/cancel, check changedTouches
+        if (additionalData.trackingTouchId !== undefined) {
+          for (let i = 0; i < originalEvent.changedTouches.length; i++) {
+            if (originalEvent.changedTouches[i].identifier === additionalData.trackingTouchId) {
+              touch = originalEvent.changedTouches[i];
+              break;
+            }
+          }
+        }
+        // Fallback to first touch
+        touch = touch || originalEvent.changedTouches[0] || {};
+      } else {
+        // For other events, check active touches
+        if (additionalData.trackingTouchId !== undefined) {
+          for (let i = 0; i < originalEvent.touches.length; i++) {
+            if (originalEvent.touches[i].identifier === additionalData.trackingTouchId) {
+              touch = originalEvent.touches[i];
+              break;
+            }
+          }
+        }
+        // Fallback to first touch
+        touch = touch || originalEvent.touches[0] || {};
+      }
+      
+      // Extract touch data
       pointerId = touch.identifier || 1;
       clientX = touch.clientX || 0;
       clientY = touch.clientY || 0;
-      // 터치 객체에서 직접 pageX/Y 가져오기
-      pageX = touch.pageX || clientX;
-      pageY = touch.pageY || clientY;
+      // Get pageX/Y directly from touch object
+      pageX = touch.pageX || (clientX + window.pageXOffset);
+      pageY = touch.pageY || (clientY + window.pageYOffset);
       isPrimary = true;
       pressure = touch.force || 0;
       
-      // 터치 오프셋 적용
+      // Apply touch offset
       clientY += this.defaults.touchOffsetY;
       clientX += this.defaults.touchOffsetX;
       pageY += this.defaults.touchOffsetY;
       pageX += this.defaults.touchOffsetX;
     } 
-    else if (originalEvent.type.startsWith('pointer') || originalEvent.type.startsWith('got') || originalEvent.type.startsWith('lost')) {
+    // Handle pointer events
+    else if (originalEvent.type.startsWith('pointer') || 
+             originalEvent.type.startsWith('got') || 
+             originalEvent.type.startsWith('lost')) {
       pointerType = originalEvent.pointerType || 'mouse';
       pointerId = originalEvent.pointerId || 1;
       clientX = originalEvent.clientX || 0;
       clientY = originalEvent.clientY || 0;
-      pageX = originalEvent.pageX || clientX;
-      pageY = originalEvent.pageY || clientY;
+      pageX = originalEvent.pageX || (clientX + window.pageXOffset);
+      pageY = originalEvent.pageY || (clientY + window.pageYOffset);
       isPrimary = originalEvent.isPrimary !== undefined ? originalEvent.isPrimary : true;
       pressure = originalEvent.pressure || 0;
       
-      // 터치 타입에만 오프셋 적용
+      // Apply offset only for touch type pointers
       if (pointerType === 'touch') {
         clientY += this.defaults.touchOffsetY;
         clientX += this.defaults.touchOffsetX;
@@ -323,30 +463,30 @@ class UnifiedPointerEvents {
         pageX += this.defaults.touchOffsetX;
       }
     } 
+    // Handle wheel events
     else if (originalEvent.type === 'wheel') {
-      // 휠 이벤트 처리
       pointerType = 'mouse';
       pointerId = 1;
       clientX = originalEvent.clientX || 0;
       clientY = originalEvent.clientY || 0;
-      pageX = originalEvent.pageX || clientX;
-      pageY = originalEvent.pageY || clientY;
+      pageX = originalEvent.pageX || (clientX + window.pageXOffset);
+      pageY = originalEvent.pageY || (clientY + window.pageYOffset);
       isPrimary = true;
       pressure = 0;
     }
+    // Handle mouse events
     else {
-      // 마우스 이벤트
       pointerType = 'mouse';
       pointerId = 1;
       clientX = originalEvent.clientX || 0;
       clientY = originalEvent.clientY || 0;
-      pageX = originalEvent.pageX || clientX;
-      pageY = originalEvent.pageY || clientY;
+      pageX = originalEvent.pageX || (clientX + window.pageXOffset);
+      pageY = originalEvent.pageY || (clientY + window.pageYOffset);
       isPrimary = true;
       pressure = originalEvent.buttons ? 0.5 : 0;
     }
 
-    // 통합 이벤트 객체 생성
+    // Create unified event object
     const unifiedEvent = {
       originalEvent,
       type: eventType,
@@ -358,17 +498,38 @@ class UnifiedPointerEvents {
       pageY,
       isPrimary,
       pressure,
-      preventDefault: () => originalEvent.preventDefault(),
-      stopPropagation: () => originalEvent.stopPropagation(),
+      // Original event methods
+      preventDefault: () => {
+        try {
+          originalEvent.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
+      },
+      stopPropagation: () => {
+        try {
+          originalEvent.stopPropagation();
+        } catch (e) {
+          this._debug('stopPropagation failed:', e.message);
+        }
+      },
       stopImmediatePropagation: originalEvent.stopImmediatePropagation 
-        ? () => originalEvent.stopImmediatePropagation() 
+        ? () => {
+            try {
+              originalEvent.stopImmediatePropagation();
+            } catch (e) {
+              this._debug('stopImmediatePropagation failed:', e.message);
+              // Fallback to regular stopPropagation
+              originalEvent.stopPropagation();
+            }
+          } 
         : () => originalEvent.stopPropagation(),
-      // 포인터 캡처 메서드 추가
+      // Pointer capture methods
       setPointerCapture: (element) => this._setPointerCapture(element, pointerId, unifiedEvent),
       releasePointerCapture: (element) => this._releasePointerCapture(element, pointerId, unifiedEvent)
     };
     
-    // 추가 데이터 병합
+    // Add additional data
     for (const key in additionalData) {
       unifiedEvent[key] = additionalData[key];
     }
@@ -377,197 +538,222 @@ class UnifiedPointerEvents {
   }
 
   /**
-   * 제스처 이벤트를 설정합니다.
+   * Sets up gesture event handlers
    * @private
    */
   _setupGestureEvents(element, eventType, callback, options, listenerId, listenerInfo) {
-    // 기본 옵션과 사용자 옵션 병합
-    const longClickDelay = options.longClickDelay || this.defaults.longClickDelay;
-    const doubleClickDelay = options.doubleClickDelay || this.defaults.doubleClickDelay;
-    const swipeThreshold = options.swipeThreshold || this.defaults.swipeThreshold;
-    const swipeTimeout = options.swipeTimeout || this.defaults.swipeTimeout;
-    const flingMinVelocity = options.flingMinVelocity || this.defaults.flingMinVelocity;
-    const flingDecay = options.flingDecay || this.defaults.flingDecay;
-    const rotateStepDeg = options.rotateStepDeg || this.defaults.rotateStepDeg;
-    const pinchZoomStep = options.pinchZoomStep || this.defaults.pinchZoomStep;
-    const preventDefault = options.preventDefault || false;
-    const usePointerCapture = options.usePointerCapture !== undefined 
-      ? options.usePointerCapture 
-      : this.defaults.usePointerCapture;
+    // Merge default options with user options
+    const mergedOptions = {
+      longClickDelay: options.longClickDelay || this.defaults.longClickDelay,
+      doubleClickDelay: options.doubleClickDelay || this.defaults.doubleClickDelay,
+      swipeThreshold: options.swipeThreshold || this.defaults.swipeThreshold,
+      swipeTimeout: options.swipeTimeout || this.defaults.swipeTimeout,
+      flingMinVelocity: options.flingMinVelocity || this.defaults.flingMinVelocity,
+      flingDecay: options.flingDecay || this.defaults.flingDecay,
+      rotateStepDeg: options.rotateStepDeg || this.defaults.rotateStepDeg,
+      pinchZoomStep: options.pinchZoomStep || this.defaults.pinchZoomStep,
+      preventDefault: !!options.preventDefault,
+      usePointerCapture: options.usePointerCapture !== undefined 
+        ? options.usePointerCapture 
+        : this.defaults.usePointerCapture
+    };
     
-    // 제스처 상태 초기화 - 리스너 정보 내에 상태 저장
+    // Initialize state for this gesture listener
     const state = listenerInfo.state;
-    state.timerId = null;
-    state.lastTapTime = 0;
-    state.startX = 0;
-    state.startY = 0;
-    state.startTime = 0;
-    state.active = false;
-    state.usePointerCapture = usePointerCapture;
-    state.longClickTriggered = false;
-    state.gestureCompleted = false;
-    state.endHandlersRegistered = false;
-    state.currentPointerId = null;
-    state.swipeTracking = {
-      active: false,
-      startX: 0,
-      startY: 0,
-      startTime: 0,
-      currentX: 0,
-      currentY: 0,
-      pointerId: null
-    };
-    state.flingTracking = {
-      active: false,
-      points: [],  // 속도 계산을 위한 최근 포인트 기록
-      velocityX: 0,
-      velocityY: 0,
-      pointerId: null
-    };
     
-    // rotate와 pinchzoom을 위한 상태 초기화
-    state.rotateTracking = {
-      active: false,
-      startAngle: 0,
-      currentAngle: 0,
-      rotation: 0,
-      pointerId: null,
-      centerX: 0,
-      centerY: 0,
-      penInitialRotation: 0,
-      // 멀티터치 회전을 위한 추가 상태
-      touch1: { id: null, startX: 0, startY: 0, currentX: 0, currentY: 0 },
-      touch2: { id: null, startX: 0, startY: 0, currentX: 0, currentY: 0 },
-      initialAngle: 0,
-      lastAngle: 0,
-      totalRotation: 0
-    };
-    
-    state.pinchZoomTracking = {
-      active: false,
-      startDistance: 0,
-      currentDistance: 0,
-      pointerId1: null,
-      pointerId2: null,
-      scale: 1.0,
-      // 멀티터치 핀치줌을 위한 추가 상태
-      touch1: { id: null, startX: 0, startY: 0, currentX: 0, currentY: 0 },
-      touch2: { id: null, startX: 0, startY: 0, currentX: 0, currentY: 0 },
-      initialDistance: 0,
-      lastDistance: 0,
-      totalScale: 1.0
-    };
-
-    // 리스너 옵션 설정
-    const listenerOptions = {
-      ...options,
-      passive: options.preventDefault ? false : options.passive
-    };
-
-    // 이벤트 핸들러 설정
+    // Create isolated state for each gesture type
     if (eventType === 'longclick') {
-      this._setupLongClickEvents(element, callback, listenerOptions, listenerId, listenerInfo, longClickDelay);
+      // Initialize longclick state
+      state.longclick = {
+        timerId: null,
+        lastTapTime: 0,
+        startX: 0,
+        startY: 0,
+        startTime: 0,
+        active: false,
+        usePointerCapture: mergedOptions.usePointerCapture,
+        triggered: false,
+        completed: false,
+        currentPointerId: null
+      };
+      
+      this._setupLongClickEvents(element, callback, mergedOptions, listenerId, listenerInfo);
     } 
     else if (eventType === 'doubleclick') {
-      this._setupDoubleClickEvents(element, callback, listenerOptions, listenerId, listenerInfo, doubleClickDelay);
+      // Initialize doubleclick state
+      state.doubleclick = {
+        lastTapTime: 0,
+        startX: 0,
+        startY: 0,
+        active: false,
+        usePointerCapture: mergedOptions.usePointerCapture,
+        completed: false,
+        currentPointerId: null
+      };
+      
+      this._setupDoubleClickEvents(element, callback, mergedOptions, listenerId, listenerInfo);
     } 
     else if (eventType === 'swipe') {
-      this._setupSwipeEvents(element, callback, listenerOptions, listenerId, listenerInfo, swipeThreshold, swipeTimeout);
+      // Initialize swipe state
+      state.swipe = {
+        active: false,
+        startX: 0,
+        startY: 0,
+        startTime: 0,
+        currentX: 0,
+        currentY: 0,
+        pointerId: null,
+        usePointerCapture: mergedOptions.usePointerCapture,
+        completed: false
+      };
+      
+      this._setupSwipeEvents(element, callback, mergedOptions, listenerId, listenerInfo);
     }
     else if (eventType === 'fling') {
-      this._setupFlingEvents(element, callback, listenerOptions, listenerId, listenerInfo, flingMinVelocity, flingDecay);
+      // Initialize fling state
+      state.fling = {
+        active: false,
+        points: [],
+        velocityX: 0,
+        velocityY: 0,
+        pointerId: null,
+        usePointerCapture: mergedOptions.usePointerCapture,
+        completed: false
+      };
+      
+      this._setupFlingEvents(element, callback, mergedOptions, listenerId, listenerInfo);
     }
     else if (eventType === 'rotate') {
-      this._setupRotateEvents(element, callback, listenerOptions, listenerId, listenerInfo, rotateStepDeg);
+      // Initialize rotate state
+      state.rotate = {
+        active: false,
+        startAngle: 0,
+        currentAngle: 0,
+        rotation: 0,
+        pointerId: null,
+        centerX: 0,
+        centerY: 0,
+        penInitialRotation: 0,
+        touch1: { id: null, startX: 0, startY: 0, currentX: 0, currentY: 0 },
+        touch2: { id: null, startX: 0, startY: 0, currentX: 0, currentY: 0 },
+        initialAngle: 0,
+        lastAngle: 0,
+        totalRotation: 0,
+        usePointerCapture: mergedOptions.usePointerCapture
+      };
+      
+      this._setupRotateEvents(element, callback, mergedOptions, listenerId, listenerInfo);
     }
     else if (eventType === 'pinchzoom') {
-      this._setupPinchZoomEvents(element, callback, listenerOptions, listenerId, listenerInfo, pinchZoomStep);
+      // Initialize pinchzoom state
+      state.pinchzoom = {
+        active: false,
+        startDistance: 0,
+        currentDistance: 0,
+        pointerId1: null,
+        pointerId2: null,
+        scale: 1.0,
+        touch1: { id: null, startX: 0, startY: 0, currentX: 0, currentY: 0 },
+        touch2: { id: null, startX: 0, startY: 0, currentX: 0, currentY: 0 },
+        initialDistance: 0,
+        lastDistance: 0,
+        totalScale: 1.0,
+        usePointerCapture: mergedOptions.usePointerCapture
+      };
+      
+      this._setupPinchZoomEvents(element, callback, mergedOptions, listenerId, listenerInfo);
     }
   }
 
   /**
-   * 롱클릭 이벤트 설정
+   * Sets up long click event handlers
    * @private
    */
-  _setupLongClickEvents(element, callback, options, listenerId, listenerInfo, longClickDelay) {
-    const state = listenerInfo.state;
-    const hasPointerEvents = 'PointerEvent' in window;
+  _setupLongClickEvents(element, callback, options, listenerId, listenerInfo) {
+    const state = listenerInfo.state.longclick;
+    const hasPointerEvents = this.features.pointerEvents;
+    const longClickDelay = options.longClickDelay;
     
-    // 시작 이벤트 핸들러
+    // Start event handler
     const startHandler = (event) => {
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
       const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
       const clientY = event.clientY || (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
       const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
       
-      // 이미 같은 포인터로 처리 중인 제스처가 있으면 무시
+      // Ignore if already tracking the same pointer
       if (state.currentPointerId === pointerId && state.active) {
-        this._debug('같은 포인터 ID로 이미 처리 중인 제스처가 있습니다');
+        this._debug('Already tracking pointer ID for longclick:', pointerId);
         return;
       }
       
-      // 이미 완료된 제스처가 있고 활성 상태가 아니면 재설정 허용
-      if (state.gestureCompleted && !state.active) {
-        this._debug('이전 제스처 완료 상태 초기화');
-        state.gestureCompleted = false;
+      // Reset completed flag if needed
+      if (state.completed && !state.active) {
+        this._debug('Resetting previous completed longclick state');
+        state.completed = false;
       }
       
-      // 새 제스처 시작
+      // Initialize new gesture tracking
       state.active = true;
       state.startX = clientX;
       state.startY = clientY;
       state.startTime = Date.now();
-      state.longClickTriggered = false; // 롱클릭 플래그 초기화
+      state.triggered = false;
       state.currentPointerId = pointerId;
       
-      // 포인터 캡처 설정 (지원되는 경우)
-      if (state.usePointerCapture && 'setPointerCapture' in element && pointerId !== undefined) {
-        this._debug(`제스처 이벤트에 대한 포인터 캡처 설정: pointerId=${pointerId}`);
+      // Set pointer capture if supported
+      if (state.usePointerCapture && this.features.pointerCapture && pointerId !== undefined) {
+        this._debug(`Setting pointer capture for longclick: pointerId=${pointerId}`);
         try {
           element.setPointerCapture(pointerId);
         } catch (e) {
-          this._debug('포인터 캡처 설정 실패:', e.message);
+          this._debug('Failed to set pointer capture:', e.message);
         }
       }
       
-      // 이전 타이머가 있다면 취소
+      // Clear any existing timer
       if (state.timerId) {
         clearTimeout(state.timerId);
         state.timerId = null;
       }
       
-      // 롱클릭 핸들러 - 지연 후 실행
+      // Set longclick timer
       state.timerId = setTimeout(() => {
-        // 중요한 수정: 이미 완료된 경우, 또는 활성 상태가 아닌 경우, 또는 포인터가 변경된 경우 무시
-        if (!state.active || state.longClickTriggered || 
-            state.gestureCompleted || state.currentPointerId !== pointerId) {
-          this._debug('롱클릭 타이머 무시 - 이미 처리됨 또는 상태 변경됨');
+        // Ignore if already completed or inactive
+        if (!state.active || state.triggered || 
+            state.completed || state.currentPointerId !== pointerId) {
+          this._debug('Ignoring longclick timer - already processed or state changed');
           return;
         }
         
-        state.longClickTriggered = true; // 롱클릭 발생 표시
-        state.gestureCompleted = true; // 제스처 완료 표시
+        state.triggered = true;
+        state.completed = true;
         
+        // Create additional data for the event
         const additionalData = {
           duration: longClickDelay,
           startX: state.startX,
           startY: state.startY
         };
         
-        // 롱클릭 이벤트 발생
-        this._debug('롱클릭 이벤트 발생');
+        // Trigger longclick event
+        this._debug('Longclick event triggered');
         callback(this._createUnifiedEvent(event, 'longclick', additionalData));
       }, longClickDelay);
     };
     
-    // 종료 이벤트 핸들러
+    // End event handler
     const endHandler = (event) => {
       const endPointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
       
-      // 현재 처리 중인 포인터와 다른 포인터의 종료 이벤트는 무시
+      // Ignore if not the tracked pointer
       if (state.currentPointerId !== endPointerId) {
         return;
       }
@@ -575,42 +761,42 @@ class UnifiedPointerEvents {
       if (state.active) {
         const clickDuration = Date.now() - state.startTime;
         
-        // 짧은 클릭인 경우 롱클릭 취소
+        // Cancel longclick for short clicks
         if (clickDuration < longClickDelay && state.timerId) {
           clearTimeout(state.timerId);
           state.timerId = null;
-          this._debug('일반 클릭 감지됨, 롱클릭 취소');
+          this._debug('Regular click detected, longclick canceled');
         }
         
-        // 제스처 상태 초기화
+        // Reset active state
         state.active = false;
         
-        // 포인터 캡처 해제
-        if (state.usePointerCapture && 'releasePointerCapture' in element && endPointerId !== undefined) {
+        // Release pointer capture
+        if (state.usePointerCapture && this.features.pointerCapture && endPointerId !== undefined) {
           try {
             element.releasePointerCapture(endPointerId);
           } catch (e) {
-            this._debug('포인터 캡처 해제 실패:', e.message);
+            this._debug('Failed to release pointer capture:', e.message);
           }
         }
         
-        // 약간의 지연 후에만 제스처 상태 완전 초기화
+        // Reset state after delay to prevent accidental reactivation
         setTimeout(() => {
-          state.currentPointerId = null; // 포인터 ID 초기화
+          state.currentPointerId = null;
           
-          // 롱클릭이 발생했었으면 상태 초기화
-          if (state.longClickTriggered) {
-            state.longClickTriggered = false;
-            state.gestureCompleted = false;
-            this._debug('롱클릭 후 제스처 상태 초기화됨');
+          // Reset triggered flag if longclick occurred
+          if (state.triggered) {
+            state.triggered = false;
+            state.completed = false;
+            this._debug('Longclick state reset after completion');
           }
-        }, 300); // 약간 더 긴 지연으로 우발적 재실행 방지
+        }, 300);
       }
     };
     
-    // 취소 이벤트 핸들러
+    // Cancel event handler
     const cancelHandler = (event) => {
-      // 현재 처리 중인 포인터 ID와 일치하는 경우에만 처리
+      // Only handle events for the current pointer
       if (state.currentPointerId === event.pointerId || event.pointerId === undefined) {
         if (state.timerId) {
           clearTimeout(state.timerId);
@@ -618,20 +804,18 @@ class UnifiedPointerEvents {
         }
         
         state.active = false;
-        
-        // 포인터 ID는 즉시 초기화
         state.currentPointerId = null;
         
-        // 롱클릭 발생 여부와 관계없이 모든 상태 초기화
+        // Reset all state
         setTimeout(() => {
-          state.longClickTriggered = false;
-          state.gestureCompleted = false;
-          this._debug('취소로 인한 롱클릭 상태 초기화');
+          state.triggered = false;
+          state.completed = false;
+          this._debug('Longclick state reset due to cancellation');
         }, 100);
       }
     };
     
-    // 이벤트 리스너 등록 (헬퍼 함수 사용)
+    // Register event listeners
     this._registerEventListeners(
       element, 
       hasPointerEvents, 
@@ -644,132 +828,142 @@ class UnifiedPointerEvents {
       listenerInfo
     );
     
-    // 포인터 이벤트일 경우 pointerleave 이벤트도 등록
+    // Add pointerleave handler for pointer events
     if (hasPointerEvents) {
-      element.addEventListener('pointerleave', cancelHandler, options);
-      listenerInfo.nativeListeners.push({
-        type: 'pointerleave',
-        handler: cancelHandler,
-        element,
-        options
-      });
+      try {
+        element.addEventListener('pointerleave', cancelHandler, options);
+        listenerInfo.nativeListeners.push({
+          type: 'pointerleave',
+          handler: cancelHandler,
+          element,
+          options
+        });
+      } catch (error) {
+        this._debug('Failed to add pointerleave handler:', error.message);
+      }
     }
   }
 
   /**
-   * 더블클릭 이벤트 설정
+   * Sets up double click event handlers
    * @private
    */
-  _setupDoubleClickEvents(element, callback, options, listenerId, listenerInfo, doubleClickDelay) {
-    const state = listenerInfo.state;
-    const hasPointerEvents = 'PointerEvent' in window;
+  _setupDoubleClickEvents(element, callback, options, listenerId, listenerInfo) {
+    const state = listenerInfo.state.doubleclick;
+    const hasPointerEvents = this.features.pointerEvents;
+    const doubleClickDelay = options.doubleClickDelay;
     
-    // 시작 이벤트 핸들러
+    // Start event handler
     const startHandler = (event) => {
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
       const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
       const clientY = event.clientY || (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
       const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
       
-      // 이미 같은 포인터로 처리 중인 제스처가 있으면 무시
+      // Ignore if already tracking same pointer
       if (state.currentPointerId === pointerId && state.active) {
-        this._debug('같은 포인터 ID로 이미 처리 중인 제스처가 있습니다');
+        this._debug('Already tracking pointer ID for doubleclick:', pointerId);
         return;
       }
       
       const now = Date.now();
       const timeSinceLastTap = now - state.lastTapTime;
       
-      // 더블클릭 감지 - 지연 시간 내에 두 번째 탭이 있고 아직 완료되지 않은 경우
-      if (timeSinceLastTap < doubleClickDelay && !state.gestureCompleted) {
+      // Check for double click
+      if (timeSinceLastTap < doubleClickDelay && !state.completed) {
+        // Create additional data for the event
         const additionalData = {
           interval: timeSinceLastTap,
           startX: state.startX,
           startY: state.startY
         };
         
-        // 더블클릭 감지 및 완료 표시 
-        state.gestureCompleted = true;
-        this._debug('더블클릭 이벤트 발생');
+        // Mark as completed
+        state.completed = true;
+        this._debug('Doubleclick event triggered');
         callback(this._createUnifiedEvent(event, 'doubleclick', additionalData));
-        state.lastTapTime = 0; // 탭 타임 초기화
+        state.lastTapTime = 0; // Reset tap time
         
-        // 제스처 상태 초기화
+        // Reset state after delay
         setTimeout(() => {
           state.active = false;
-          state.gestureCompleted = false;
-          state.currentPointerId = null; // 포인터 ID 초기화
-          this._debug('더블클릭 후 제스처 상태 초기화됨');
-        }, 300); // 약간 더 긴 지연으로 우발적 재실행 방지
+          state.completed = false;
+          state.currentPointerId = null;
+          this._debug('Doubleclick state reset after completion');
+        }, 300);
       } else {
-        // 첫 번째 탭 기록
+        // Record first tap
         state.active = true;
         state.startX = clientX;
         state.startY = clientY;
         state.lastTapTime = now;
         state.currentPointerId = pointerId;
         
-        // 포인터 캡처 설정 (지원되는 경우)
-        if (state.usePointerCapture && 'setPointerCapture' in element && pointerId !== undefined) {
-          this._debug(`더블클릭 이벤트에 대한 포인터 캡처 설정: pointerId=${pointerId}`);
+        // Set pointer capture if supported
+        if (state.usePointerCapture && this.features.pointerCapture && pointerId !== undefined) {
+          this._debug(`Setting pointer capture for doubleclick: pointerId=${pointerId}`);
           try {
             element.setPointerCapture(pointerId);
           } catch (e) {
-            this._debug('포인터 캡처 설정 실패:', e.message);
+            this._debug('Failed to set pointer capture:', e.message);
           }
         }
       }
     };
     
-    // 종료 이벤트 핸들러
+    // End event handler
     const endHandler = (event) => {
       const endPointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
       
-      // 현재 처리 중인 포인터와 다른 포인터의 종료 이벤트는 무시
+      // Ignore if not the tracked pointer
       if (state.currentPointerId !== endPointerId) {
         return;
       }
       
       if (state.active) {
-        // 제스처 상태 초기화
+        // Reset active state
         state.active = false;
         
-        // 포인터 캡처 해제
-        if (state.usePointerCapture && 'releasePointerCapture' in element && endPointerId !== undefined) {
+        // Release pointer capture
+        if (state.usePointerCapture && this.features.pointerCapture && endPointerId !== undefined) {
           try {
             element.releasePointerCapture(endPointerId);
           } catch (e) {
-            this._debug('포인터 캡처 해제 실패:', e.message);
+            this._debug('Failed to release pointer capture:', e.message);
           }
         }
         
-        // 더블클릭 시간이 초과되면 상태 재설정 (첫 번째 클릭 후 일정 시간 지났을 때)
+        // Reset state after doubleclick timeout
         setTimeout(() => {
           if (Date.now() - state.lastTapTime > doubleClickDelay) {
-            state.currentPointerId = null; // 포인터 ID 초기화
+            state.currentPointerId = null;
             state.lastTapTime = 0;
-            state.gestureCompleted = false;
-            this._debug('더블클릭 시간 초과, 상태 재설정됨');
+            state.completed = false;
+            this._debug('Doubleclick timeout, state reset');
           }
         }, doubleClickDelay + 50);
       }
     };
     
-    // 취소 이벤트 핸들러
+    // Cancel event handler
     const cancelHandler = (event) => {
-      // 현재 처리 중인 포인터 ID와 일치하는 경우에만 처리
+      // Only handle events for the current pointer
       if (state.currentPointerId === event.pointerId || event.pointerId === undefined) {
         state.active = false;
         state.currentPointerId = null;
         
-        // 더블클릭 타이밍 초기화 안 함 (다음 클릭에서 더블클릭으로 인식할 수 있도록)
+        // Don't reset lastTapTime to allow doubleclick detection across cancellations
       }
     };
     
-    // 이벤트 리스너 등록 (헬퍼 함수 사용)
+    // Register event listeners
     this._registerEventListeners(
       element, 
       hasPointerEvents, 
@@ -782,118 +976,126 @@ class UnifiedPointerEvents {
       listenerInfo
     );
     
-    // 포인터 이벤트일 경우 pointerleave 이벤트도 등록
+    // Add pointerleave handler for pointer events
     if (hasPointerEvents) {
-      element.addEventListener('pointerleave', cancelHandler, options);
-      listenerInfo.nativeListeners.push({
-        type: 'pointerleave',
-        handler: cancelHandler,
-        element,
-        options
-      });
+      try {
+        element.addEventListener('pointerleave', cancelHandler, options);
+        listenerInfo.nativeListeners.push({
+          type: 'pointerleave',
+          handler: cancelHandler,
+          element,
+          options
+        });
+      } catch (error) {
+        this._debug('Failed to add pointerleave handler:', error.message);
+      }
     }
   }
 
   /**
-   * 스와이프 이벤트 설정
+   * Sets up swipe event handlers
    * @private
    */
-  _setupSwipeEvents(element, callback, options, listenerId, listenerInfo, swipeThreshold, swipeTimeout) {
-    const state = listenerInfo.state;
-    const swipeTracking = state.swipeTracking;
-    const hasPointerEvents = 'PointerEvent' in window;
+  _setupSwipeEvents(element, callback, options, listenerId, listenerInfo) {
+    const state = listenerInfo.state.swipe;
+    const hasPointerEvents = this.features.pointerEvents;
+    const swipeThreshold = options.swipeThreshold;
+    const swipeTimeout = options.swipeTimeout;
     
-    // 시작 이벤트 핸들러
+    // Start event handler
     const startHandler = (event) => {
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
       const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
       const clientY = event.clientY || (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
       const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
       
-      // 이미 같은 포인터로 처리 중인 제스처가 있으면 무시
-      if (state.currentPointerId === pointerId && state.active) {
-        this._debug('같은 포인터 ID로 이미 처리 중인 스와이프가 있습니다');
+      // Ignore if already tracking same pointer
+      if (state.pointerId === pointerId && state.active) {
+        this._debug('Already tracking pointer ID for swipe:', pointerId);
         return;
       }
       
-      // 새로운 스와이프 시작
+      // Initialize swipe tracking
       state.active = true;
-      state.gestureCompleted = false; // 제스처 완료 플래그 초기화
-      state.currentPointerId = pointerId; // 현재 처리 중인 포인터 ID 저장
+      state.completed = false;
+      state.pointerId = pointerId;
+      state.startX = clientX;
+      state.startY = clientY;
+      state.currentX = clientX;
+      state.currentY = clientY;
+      state.startTime = Date.now();
       
-      swipeTracking.active = true;
-      swipeTracking.pointerId = pointerId;
-      swipeTracking.startX = clientX;
-      swipeTracking.startY = clientY;
-      swipeTracking.currentX = clientX;
-      swipeTracking.currentY = clientY;
-      swipeTracking.startTime = Date.now();
+      this._debug(`Swipe start: ID=${pointerId}, X=${state.startX}, Y=${state.startY}`);
       
-      this._debug(`스와이프 시작: ID=${pointerId}, X=${swipeTracking.startX}, Y=${swipeTracking.startY}`);
-      
-      // 포인터 캡처 설정 (지원되는 경우)
-      if (state.usePointerCapture && 'setPointerCapture' in element && pointerId !== undefined) {
-        this._debug(`스와이프 이벤트에 대한 포인터 캡처 설정: pointerId=${pointerId}`);
+      // Set pointer capture if supported
+      if (state.usePointerCapture && this.features.pointerCapture && pointerId !== undefined) {
+        this._debug(`Setting pointer capture for swipe: pointerId=${pointerId}`);
         try {
           element.setPointerCapture(pointerId);
         } catch (e) {
-          this._debug('포인터 캡처 설정 실패:', e.message);
+          this._debug('Failed to set pointer capture:', e.message);
         }
       }
     };
     
-    // 이동 이벤트 핸들러
+    // Move event handler
     const moveHandler = (event) => {
       const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
       const clientY = event.clientY || (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
       const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
       
-      // 현재 추적 중인 포인터 ID가 다르면 무시
-      if (swipeTracking.pointerId !== pointerId) {
+      // Ignore if not tracking this pointer
+      if (state.pointerId !== pointerId) {
         return;
       }
       
-      if (!swipeTracking.active || state.gestureCompleted) return;
+      if (!state.active || state.completed) return;
       
-      swipeTracking.currentX = clientX;
-      swipeTracking.currentY = clientY;
+      // Update current position
+      state.currentX = clientX;
+      state.currentY = clientY;
     };
     
-    // 종료 이벤트 핸들러
+    // End event handler
     const endHandler = (event) => {
       const eventPointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
       
-      // 현재 추적 중인 포인터 ID가 다르면 무시
-      if (swipeTracking.pointerId !== eventPointerId) {
+      // Ignore if not tracking this pointer
+      if (state.pointerId !== eventPointerId) {
         return;
       }
       
-      if (!swipeTracking.active || state.gestureCompleted) return;
+      if (!state.active || state.completed) return;
       
+      // Calculate time and distance
       const now = Date.now();
-      const deltaTime = now - swipeTracking.startTime;
+      const deltaTime = now - state.startTime;
       
-      // 포인터 캡처 해제
-      if (state.usePointerCapture && 'releasePointerCapture' in element && eventPointerId !== undefined) {
+      // Release pointer capture
+      if (state.usePointerCapture && this.features.pointerCapture && eventPointerId !== undefined) {
         try {
           element.releasePointerCapture(eventPointerId);
         } catch (e) {
-          this._debug('포인터 캡처 해제 실패:', e.message);
+          this._debug('Failed to release pointer capture:', e.message);
         }
       }
       
-      // 시간 제한 확인
+      // Check swipe timeout
       if (deltaTime <= swipeTimeout) {
-        const deltaX = swipeTracking.currentX - swipeTracking.startX;
-        const deltaY = swipeTracking.currentY - swipeTracking.startY;
+        const deltaX = state.currentX - state.startX;
+        const deltaY = state.currentY - state.startY;
         const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
         
-        // 거리 임계값 확인
+        // Check distance threshold
         if (distance >= swipeThreshold) {
-          // 방향 결정
+          // Determine direction
           let direction;
           const absX = Math.abs(deltaX);
           const absY = Math.abs(deltaY);
@@ -904,10 +1106,10 @@ class UnifiedPointerEvents {
             direction = deltaY > 0 ? 'down' : 'up';
           }
           
-          // 스와이프 감지 시 완료 상태로 표시
-          state.gestureCompleted = true;
+          // Mark as completed
+          state.completed = true;
           
-          // 스와이프 이벤트 발생
+          // Create swipe event data
           const additionalData = {
             direction,
             distance,
@@ -915,61 +1117,58 @@ class UnifiedPointerEvents {
             deltaY,
             duration: deltaTime,
             speed: distance / deltaTime,
-            startX: swipeTracking.startX,
-            startY: swipeTracking.startY,
-            endX: swipeTracking.currentX,
-            endY: swipeTracking.currentY
+            startX: state.startX,
+            startY: state.startY,
+            endX: state.currentX,
+            endY: state.currentY
           };
           
-          this._debug(`스와이프 감지: 방향=${direction}, 거리=${Math.round(distance)}, 속도=${Math.round(distance/deltaTime*1000)}px/s`);
+          this._debug(`Swipe detected: direction=${direction}, distance=${Math.round(distance)}px, speed=${Math.round(distance/deltaTime*1000)}px/s`);
           callback(this._createUnifiedEvent(event, 'swipe', additionalData));
         }
       }
       
-      // 스와이프 상태 초기화
-      swipeTracking.active = false;
-      swipeTracking.pointerId = null;
+      // Reset swipe state
       state.active = false;
-      state.currentPointerId = null;
+      state.pointerId = null;
       
-      // 일정 시간 후에 제스처 완료 상태 재설정
+      // Reset completed state after delay
       setTimeout(() => {
-        state.gestureCompleted = false;
-        this._debug('스와이프 후 제스처 상태 재설정됨');
-      }, 300); // 약간 더 긴 지연으로 우발적 재실행 방지
-    };
-    
-    // 취소 이벤트 핸들러
-    const cancelHandler = (event) => {
-      const eventPointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
-      
-      // 현재 추적 중인 포인터 ID가 다르면 무시
-      if (swipeTracking.pointerId !== eventPointerId) {
-        return;
-      }
-      
-      // 포인터 캡처 해제
-      if (state.usePointerCapture && 'releasePointerCapture' in element && eventPointerId !== undefined) {
-        try {
-          element.releasePointerCapture(eventPointerId);
-        } catch (e) {
-          this._debug('포인터 캡처 해제 실패:', e.message);
-        }
-      }
-      
-      swipeTracking.active = false;
-      swipeTracking.pointerId = null;
-      state.active = false;
-      state.currentPointerId = null;
-      
-      // 취소 시에도 제스처 완료 상태 재설정
-      setTimeout(() => {
-        state.gestureCompleted = false;
-        this._debug('스와이프 취소 후 제스처 상태 재설정됨');
+        state.completed = false;
+        this._debug('Swipe state reset after completion');
       }, 300);
     };
     
-    // 이벤트 리스너 등록 (헬퍼 함수 사용)
+    // Cancel event handler
+    const cancelHandler = (event) => {
+      const eventPointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
+      
+      // Ignore if not tracking this pointer
+      if (state.pointerId !== eventPointerId) {
+        return;
+      }
+      
+      // Release pointer capture
+      if (state.usePointerCapture && this.features.pointerCapture && eventPointerId !== undefined) {
+        try {
+          element.releasePointerCapture(eventPointerId);
+        } catch (e) {
+          this._debug('Failed to release pointer capture:', e.message);
+        }
+      }
+      
+      // Reset state
+      state.active = false;
+      state.pointerId = null;
+      
+      // Reset completed flag after delay
+      setTimeout(() => {
+        state.completed = false;
+        this._debug('Swipe state reset after cancellation');
+      }, 300);
+    };
+    
+    // Register event listeners
     this._registerEventListeners(
       element, 
       hasPointerEvents, 
@@ -983,35 +1182,43 @@ class UnifiedPointerEvents {
       listenerInfo
     );
     
-    // 포인터 이벤트일 경우 pointerleave 이벤트도 등록
+    // Add pointerleave handler for pointer events
     if (hasPointerEvents) {
-      element.addEventListener('pointerleave', cancelHandler, options);
-      listenerInfo.nativeListeners.push({
-        type: 'pointerleave',
-        handler: cancelHandler,
-        element,
-        options
-      });
+      try {
+        element.addEventListener('pointerleave', cancelHandler, options);
+        listenerInfo.nativeListeners.push({
+          type: 'pointerleave',
+          handler: cancelHandler,
+          element,
+          options
+        });
+      } catch (error) {
+        this._debug('Failed to add pointerleave handler:', error.message);
+      }
     }
   }
 
   /**
-   * 플링 이벤트 설정
-   * 포인터를 빠르게 움직인 후 떼면 발생하는 이벤트
+   * Sets up fling event handlers
    * @private
    */
-  _setupFlingEvents(element, callback, options, listenerId, listenerInfo, flingMinVelocity, flingDecay) {
-    const state = listenerInfo.state;
-    const flingTracking = state.flingTracking;
-    const hasPointerEvents = 'PointerEvent' in window;
+  _setupFlingEvents(element, callback, options, listenerId, listenerInfo) {
+    const state = listenerInfo.state.fling;
+    const hasPointerEvents = this.features.pointerEvents;
+    const flingMinVelocity = options.flingMinVelocity;
+    const flingDecay = options.flingDecay;
     
-    // 속도 계산을 위한 이동 포인트 최대 개수
+    // Maximum number of points to track for velocity calculation
     const MAX_VELOCITY_POINTS = 5;
     
-    // 시작 이벤트 핸들러
+    // Start event handler
     const startHandler = (event) => {
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
       const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
@@ -1019,188 +1226,183 @@ class UnifiedPointerEvents {
       const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
       const timestamp = Date.now();
       
-      // 이미 같은 포인터로 처리 중인 제스처가 있으면 무시
-      if (state.currentPointerId === pointerId && state.active) {
-        this._debug('같은 포인터 ID로 이미 처리 중인 플링 제스처가 있습니다');
+      // Ignore if already tracking same pointer
+      if (state.pointerId === pointerId && state.active) {
+        this._debug('Already tracking pointer ID for fling:', pointerId);
         return;
       }
       
-      // 새로운 플링 추적 시작
+      // Initialize fling tracking
       state.active = true;
-      state.gestureCompleted = false;
-      state.currentPointerId = pointerId;
+      state.completed = false;
+      state.pointerId = pointerId;
+      state.points = [{ x: clientX, y: clientY, timestamp }];
+      state.velocityX = 0;
+      state.velocityY = 0;
       
-      flingTracking.active = true;
-      flingTracking.pointerId = pointerId;
-      flingTracking.points = [{ x: clientX, y: clientY, timestamp }];
-      flingTracking.velocityX = 0;
-      flingTracking.velocityY = 0;
+      this._debug(`Fling tracking start: ID=${pointerId}, X=${clientX}, Y=${clientY}`);
       
-      this._debug(`플링 추적 시작: ID=${pointerId}, X=${clientX}, Y=${clientY}`);
-      
-      // 포인터 캡처 설정 (지원되는 경우)
-      if (state.usePointerCapture && 'setPointerCapture' in element && pointerId !== undefined) {
-        this._debug(`플링 이벤트에 대한 포인터 캡처 설정: pointerId=${pointerId}`);
+      // Set pointer capture if supported
+      if (state.usePointerCapture && this.features.pointerCapture && pointerId !== undefined) {
+        this._debug(`Setting pointer capture for fling: pointerId=${pointerId}`);
         try {
           element.setPointerCapture(pointerId);
         } catch (e) {
-          this._debug('포인터 캡처 설정 실패:', e.message);
+          this._debug('Failed to set pointer capture:', e.message);
         }
       }
     };
     
-    // 이동 이벤트 핸들러
+    // Move event handler
     const moveHandler = (event) => {
       const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
       const clientY = event.clientY || (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
       const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
       const timestamp = Date.now();
       
-      // 현재 추적 중인 포인터 ID가 다르면 무시
-      if (flingTracking.pointerId !== pointerId) {
+      // Ignore if not tracking this pointer
+      if (state.pointerId !== pointerId) {
         return;
       }
       
-      if (!flingTracking.active || state.gestureCompleted) return;
+      if (!state.active || state.completed) return;
       
-      // 이동 포인트 추적 (가장 최근 포인트만 유지)
-      flingTracking.points.push({ x: clientX, y: clientY, timestamp });
+      // Track movement points (limit to maximum number for efficiency)
+      state.points.push({ x: clientX, y: clientY, timestamp });
       
-      // 최대 개수 유지
-      if (flingTracking.points.length > MAX_VELOCITY_POINTS) {
-        flingTracking.points.shift();
+      // Keep only the most recent points
+      if (state.points.length > MAX_VELOCITY_POINTS) {
+        state.points.shift();
       }
     };
     
-    // 종료 이벤트 핸들러
+    // End event handler
     const endHandler = (event) => {
       const eventPointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
       
-      // 현재 추적 중인 포인터 ID가 다르면 무시
-      if (flingTracking.pointerId !== eventPointerId) {
+      // Ignore if not tracking this pointer
+      if (state.pointerId !== eventPointerId) {
         return;
       }
       
-      if (!flingTracking.active || state.gestureCompleted) return;
+      if (!state.active || state.completed) return;
       
-      // 포인터 캡처 해제
-      if (state.usePointerCapture && 'releasePointerCapture' in element && eventPointerId !== undefined) {
+      // Release pointer capture
+      if (state.usePointerCapture && this.features.pointerCapture && eventPointerId !== undefined) {
         try {
           element.releasePointerCapture(eventPointerId);
         } catch (e) {
-          this._debug('포인터 캡처 해제 실패:', e.message);
+          this._debug('Failed to release pointer capture:', e.message);
         }
       }
       
-      // 속도 계산
-      if (flingTracking.points.length >= 2) {
-        const lastPoint = flingTracking.points[flingTracking.points.length - 1];
-        const firstPoint = flingTracking.points[0];
+      // Calculate velocity if enough points were recorded
+      if (state.points.length >= 2) {
+        const lastPoint = state.points[state.points.length - 1];
+        const firstPoint = state.points[0];
         
         const deltaX = lastPoint.x - firstPoint.x;
         const deltaY = lastPoint.y - firstPoint.y;
-        const deltaTime = (lastPoint.timestamp - firstPoint.timestamp) / 1000; // 초 단위로 변환
+        const deltaTime = (lastPoint.timestamp - firstPoint.timestamp) / 1000; // in seconds
         
         if (deltaTime > 0) {
-          // 속도 계산 (픽셀/초)
-          flingTracking.velocityX = deltaX / deltaTime;
-          flingTracking.velocityY = deltaY / deltaTime;
+          // Calculate velocity (px/sec)
+          state.velocityX = deltaX / deltaTime;
+          state.velocityY = deltaY / deltaTime;
           
-          // 속도의 크기 계산
-          const velocity = Math.sqrt(flingTracking.velocityX * flingTracking.velocityX + 
-                                    flingTracking.velocityY * flingTracking.velocityY);
+          // Calculate total velocity magnitude
+          const velocity = Math.sqrt(
+            state.velocityX * state.velocityX + 
+            state.velocityY * state.velocityY
+          );
           
-          this._debug(`플링 속도 계산: ${Math.round(velocity)}px/s (X: ${Math.round(flingTracking.velocityX)}, Y: ${Math.round(flingTracking.velocityY)})`);
+          this._debug(`Fling velocity: ${Math.round(velocity)}px/s (X: ${Math.round(state.velocityX)}, Y: ${Math.round(state.velocityY)})`);
           
-          // 최소 속도 이상인 경우 플링 이벤트 발생
+          // Check if velocity exceeds minimum threshold
           if (velocity >= flingMinVelocity) {
-            // 방향 결정
+            // Determine primary direction
             let direction;
-            const absVelocityX = Math.abs(flingTracking.velocityX);
-            const absVelocityY = Math.abs(flingTracking.velocityY);
+            const absVelocityX = Math.abs(state.velocityX);
+            const absVelocityY = Math.abs(state.velocityY);
             
             if (absVelocityX > absVelocityY) {
-              direction = flingTracking.velocityX > 0 ? 'right' : 'left';
+              direction = state.velocityX > 0 ? 'right' : 'left';
             } else {
-              direction = flingTracking.velocityY > 0 ? 'down' : 'up';
+              direction = state.velocityY > 0 ? 'down' : 'up';
             }
             
-            // 플링 감지 시 완료 상태로 표시
-            state.gestureCompleted = true;
+            // Mark as completed
+            state.completed = true;
             
-            // 플링 이벤트 발생
+            // Create fling event data
             const additionalData = {
               direction,
               velocity,
-              velocityX: flingTracking.velocityX,
-              velocityY: flingTracking.velocityY,
-              decay: flingDecay, // 감속 계수
+              velocityX: state.velocityX,
+              velocityY: state.velocityY,
+              decay: flingDecay,
               startPoint: firstPoint,
               endPoint: lastPoint,
               deltaTime,
-              // 플링 후 위치 예측 값 (특정 시간 후의 위치 추정)
-              // 예: 0.5초 후 위치 = 현재위치 + 속도*시간*감속계수
+              // Position prediction function
               predictPosition: (time) => {
-                const dampingFactor = Math.pow(flingDecay, time * 60); // 60fps 기준 감쇠 계수
+                const dampingFactor = Math.pow(flingDecay, time * 60); // 60fps damping
                 return {
-                  x: lastPoint.x + flingTracking.velocityX * time * dampingFactor,
-                  y: lastPoint.y + flingTracking.velocityY * time * dampingFactor
+                  x: lastPoint.x + state.velocityX * time * dampingFactor,
+                  y: lastPoint.y + state.velocityY * time * dampingFactor
                 };
               }
             };
             
-            this._debug(`플링 감지: 방향=${direction}, 속도=${Math.round(velocity)}px/s`);
+            this._debug(`Fling detected: direction=${direction}, velocity=${Math.round(velocity)}px/s`);
             callback(this._createUnifiedEvent(event, 'fling', additionalData));
           }
         }
       }
       
-      // 플링 상태 초기화
-      flingTracking.active = false;
-      flingTracking.pointerId = null;
-      flingTracking.points = [];
+      // Reset fling state
       state.active = false;
-      state.currentPointerId = null;
+      state.pointerId = null;
+      state.points = [];
       
-      // 일정 시간 후에 제스처 완료 상태 재설정
+      // Reset completed flag after delay
       setTimeout(() => {
-        state.gestureCompleted = false;
-        this._debug('플링 후 제스처 상태 재설정됨');
+        state.completed = false;
+        this._debug('Fling state reset after completion');
       }, 300);
     };
     
-    // 취소 이벤트 핸들러
+    // Cancel event handler
     const cancelHandler = (event) => {
       const eventPointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
       
-      // 현재 추적 중인 포인터 ID가 다르면 무시
-      if (flingTracking.pointerId !== eventPointerId) {
+      // Ignore if not tracking this pointer
+      if (state.pointerId !== eventPointerId) {
         return;
       }
       
-      // 포인터 캡처 해제
-      if (state.usePointerCapture && 'releasePointerCapture' in element && eventPointerId !== undefined) {
+      // Release pointer capture
+      if (state.usePointerCapture && this.features.pointerCapture && eventPointerId !== undefined) {
         try {
           element.releasePointerCapture(eventPointerId);
         } catch (e) {
-          this._debug('포인터 캡처 해제 실패:', e.message);
+          this._debug('Failed to release pointer capture:', e.message);
         }
       }
       
-      flingTracking.active = false;
-      flingTracking.pointerId = null;
-      flingTracking.points = [];
+      // Reset state
       state.active = false;
-      state.currentPointerId = null;
+      state.pointerId = null;
+      state.points = [];
       
-      // 취소 시에도 제스처 완료 상태 재설정
+      // Reset completed flag after delay
       setTimeout(() => {
-        state.gestureCompleted = false;
-        this._debug('플링 취소 후 제스처 상태 재설정됨');
+        state.completed = false;
+        this._debug('Fling state reset after cancellation');
       }, 300);
     };
     
-    // 이벤트 리스너 등록 (헬퍼 함수 사용)
+    // Register event listeners
     this._registerEventListeners(
       element, 
       hasPointerEvents, 
@@ -1214,58 +1416,61 @@ class UnifiedPointerEvents {
       listenerInfo
     );
     
-    // 포인터 이벤트일 경우 pointerleave 이벤트도 등록
+    // Add pointerleave handler for pointer events
     if (hasPointerEvents) {
-      element.addEventListener('pointerleave', cancelHandler, options);
-      listenerInfo.nativeListeners.push({
-        type: 'pointerleave',
-        handler: cancelHandler,
-        element,
-        options
-      });
+      try {
+        element.addEventListener('pointerleave', cancelHandler, options);
+        listenerInfo.nativeListeners.push({
+          type: 'pointerleave',
+          handler: cancelHandler,
+          element,
+          options
+        });
+      } catch (error) {
+        this._debug('Failed to add pointerleave handler:', error.message);
+      }
     }
   }
 
   /**
-   * 회전 제스처 이벤트 설정
-   * - 마우스: Ctrl + 휠로 회전
-   * - 펜: 펜 회전 감지 (지원 시)
-   * - 터치: 두 손가락 회전 (추가됨)
+   * Sets up rotate event handlers
    * @private
    */
-  _setupRotateEvents(element, callback, options, listenerId, listenerInfo, rotateStepDeg) {
-    const state = listenerInfo.state;
-    const rotateTracking = state.rotateTracking;
-    const hasPointerEvents = 'PointerEvent' in window;
-    
-    // 터치 이벤트 지원 여부 확인
-    const hasTouchEvents = 'ontouchstart' in window;
+  _setupRotateEvents(element, callback, options, listenerId, listenerInfo) {
+    const state = listenerInfo.state.rotate;
+    const hasPointerEvents = this.features.pointerEvents;
+    const hasTouchEvents = this.features.touch;
+    const rotateStepDeg = options.rotateStepDeg;
     const touchFingerDistance = this.defaults.touchFingerDistance;
     
-    // 마우스 휠 이벤트 핸들러 (Ctrl + 휠)
+    // Wheel event handler (Ctrl + wheel)
     const wheelHandler = (event) => {
-      // Ctrl 키를 누른 상태에서만 회전 처리
+      // Only handle Ctrl+wheel for rotation
       if (!event.ctrlKey || event.altKey) return;
       
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
-      // 회전 각도 계산 (휠 델타에 비례)
+      // Calculate rotation amount based on wheel delta
       const delta = event.deltaY || event.detail || event.wheelDelta;
-      const rotationDelta = delta > 0 ? -rotateStepDeg : rotateStepDeg; // 휠 방향에 따라 회전 방향 결정
+      const rotationDelta = delta > 0 ? -rotateStepDeg : rotateStepDeg;
       
-      // 현재 각도 업데이트
-      rotateTracking.rotation += rotationDelta;
-      rotateTracking.currentAngle = (rotateTracking.currentAngle + rotationDelta) % 360;
+      // Update rotation values
+      state.rotation += rotationDelta;
+      state.currentAngle = (state.currentAngle + rotationDelta) % 360;
       
-      // 각도 정규화 (0-360)
-      if (rotateTracking.currentAngle < 0) rotateTracking.currentAngle += 360;
+      // Normalize angle to 0-360 range
+      if (state.currentAngle < 0) state.currentAngle += 360;
       
-      // 회전 이벤트 발생
+      // Create rotate event data
       const additionalData = {
-        angle: rotateTracking.currentAngle,
-        rotation: rotateTracking.rotation,
+        angle: state.currentAngle,
+        rotation: state.rotation,
         deltaAngle: rotationDelta,
         center: {
           x: event.clientX,
@@ -1275,73 +1480,78 @@ class UnifiedPointerEvents {
         isWheel: true
       };
       
-      this._debug(`마우스 회전 감지: 각도=${rotateTracking.currentAngle.toFixed(2)}°, 델타=${rotationDelta}°`);
+      this._debug(`Mouse rotation: angle=${state.currentAngle.toFixed(2)}°, delta=${rotationDelta}°`);
       callback(this._createUnifiedEvent(event, 'rotate', additionalData));
     };
     
-    // 펜 회전 이벤트 핸들러 (포인터 이벤트 지원 시)
+    // Pen rotation handler
     const penRotationHandler = (event) => {
-      // 펜 이벤트만 처리
+      // Only handle pen events
       if (event.pointerType !== 'pen') return;
       
-      // 펜 회전 정보가 있는지 확인
-      if (typeof event.rotation !== 'number' && 
-          typeof event.tiltX !== 'number' && 
-          typeof event.tiltY !== 'number') {
-        return;
-      }
+      // Check for pen rotation information
+      const hasRotationInfo = typeof event.rotation === 'number' || 
+                              typeof event.tiltX === 'number' || 
+                              typeof event.tiltY === 'number';
+                              
+      if (!hasRotationInfo) return;
       
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
+      // Calculate current rotation
       let currentRotation = 0;
       
-      // rotation 속성이 있으면 직접 사용
+      // Use direct rotation if available
       if (typeof event.rotation === 'number') {
         currentRotation = event.rotation;
       } 
-      // twist를 사용하여 각도 추정
+      // Use twist if available
       else if (typeof event.twist === 'number' && event.twist !== 0) {
         currentRotation = event.twist;
       } 
-      // tiltX와 tiltY를 사용하여 각도 추정
+      // Estimate rotation from tilt values
       else if (typeof event.tiltX === 'number' && typeof event.tiltY === 'number') {
         currentRotation = Math.atan2(event.tiltY, event.tiltX) * 180 / Math.PI;
       }
       
-      // 초기 회전 저장 (첫 번째 이벤트)
-      if (!rotateTracking.active) {
-        rotateTracking.active = true;
-        rotateTracking.pointerId = event.pointerId;
-        rotateTracking.penInitialRotation = currentRotation;
-        rotateTracking.startAngle = 0;
-        rotateTracking.currentAngle = 0;
+      // Initialize tracking on first event
+      if (!state.active) {
+        state.active = true;
+        state.pointerId = event.pointerId;
+        state.penInitialRotation = currentRotation;
+        state.startAngle = 0;
+        state.currentAngle = 0;
         return;
       }
       
-      // 다른 포인터는 무시
-      if (rotateTracking.pointerId !== event.pointerId) return;
+      // Ignore events from other pointers
+      if (state.pointerId !== event.pointerId) return;
       
-      // 회전 각도 변화량 계산
-      const deltaRotation = currentRotation - rotateTracking.penInitialRotation;
+      // Calculate rotation change
+      const deltaRotation = currentRotation - state.penInitialRotation;
       
-      // 변화가 너무 작으면 무시
+      // Ignore tiny changes
       if (Math.abs(deltaRotation) < 1) return;
       
-      // 회전 각도 업데이트
-      rotateTracking.currentAngle = (rotateTracking.startAngle + deltaRotation) % 360;
-      rotateTracking.rotation += deltaRotation;
-      rotateTracking.penInitialRotation = currentRotation;
-      rotateTracking.startAngle = rotateTracking.currentAngle;
+      // Update rotation values
+      state.currentAngle = (state.startAngle + deltaRotation) % 360;
+      state.rotation += deltaRotation;
+      state.penInitialRotation = currentRotation;
+      state.startAngle = state.currentAngle;
       
-      // 각도 정규화 (0-360)
-      if (rotateTracking.currentAngle < 0) rotateTracking.currentAngle += 360;
+      // Normalize angle to 0-360 range
+      if (state.currentAngle < 0) state.currentAngle += 360;
       
-      // 회전 이벤트 발생
+      // Create rotate event data
       const additionalData = {
-        angle: rotateTracking.currentAngle,
-        rotation: rotateTracking.rotation,
+        angle: state.currentAngle,
+        rotation: state.rotation,
         deltaAngle: deltaRotation,
         center: {
           x: event.clientX,
@@ -1354,44 +1564,49 @@ class UnifiedPointerEvents {
         penTwist: event.twist
       };
       
-      this._debug(`펜 회전 감지: 각도=${rotateTracking.currentAngle.toFixed(2)}°, 델타=${deltaRotation.toFixed(2)}°`);
+      this._debug(`Pen rotation: angle=${state.currentAngle.toFixed(2)}°, delta=${deltaRotation.toFixed(2)}°`);
       callback(this._createUnifiedEvent(event, 'rotate', additionalData));
     };
     
-    // 펜 포인터 종료 핸들러
+    // Pen pointer end handler
     const penEndHandler = (event) => {
       if (event.pointerType !== 'pen') return;
       
-      if (rotateTracking.pointerId === event.pointerId) {
-        rotateTracking.active = false;
-        rotateTracking.pointerId = null;
+      if (state.pointerId === event.pointerId) {
+        state.active = false;
+        state.pointerId = null;
       }
     };
     
-    // 터치 이벤트 핸들러 (두 손가락 회전)
+    // Touch start handler (two-finger rotation)
     const touchStartHandler = (event) => {
+      // Need exactly two touches for rotation
       if (event.touches.length !== 2) return;
       
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
       const touch1 = event.touches[0];
       const touch2 = event.touches[1];
       
-      // 두 손가락 사이의 거리 계산
+      // Calculate distance between touches
       const dx = touch2.clientX - touch1.clientX;
       const dy = touch2.clientY - touch1.clientY;
       const distance = Math.sqrt(dx * dx + dy * dy);
       
-      // 손가락 사이의 거리가 충분한지 확인
+      // Ensure touches are far enough apart
       if (distance < touchFingerDistance) {
         return;
       }
       
-      // 회전 추적 초기화
-      rotateTracking.active = true;
-      rotateTracking.touch1 = {
+      // Initialize rotation tracking
+      state.active = true;
+      state.touch1 = {
         id: touch1.identifier,
         startX: touch1.clientX,
         startY: touch1.clientY,
@@ -1399,7 +1614,7 @@ class UnifiedPointerEvents {
         currentY: touch1.clientY
       };
       
-      rotateTracking.touch2 = {
+      state.touch2 = {
         id: touch2.identifier,
         startX: touch2.clientX,
         startY: touch2.clientY,
@@ -1407,85 +1622,90 @@ class UnifiedPointerEvents {
         currentY: touch2.clientY
       };
       
-      // 중심점 계산
-      rotateTracking.centerX = (touch1.clientX + touch2.clientX) / 2;
-      rotateTracking.centerY = (touch1.clientY + touch2.clientY) / 2;
+      // Calculate center point
+      state.centerX = (touch1.clientX + touch2.clientX) / 2;
+      state.centerY = (touch1.clientY + touch2.clientY) / 2;
       
-      // 초기 각도 계산
-      rotateTracking.initialAngle = Math.atan2(
+      // Calculate initial angle
+      state.initialAngle = Math.atan2(
         touch2.clientY - touch1.clientY,
         touch2.clientX - touch1.clientX
       ) * 180 / Math.PI;
       
-      rotateTracking.lastAngle = rotateTracking.initialAngle;
-      rotateTracking.totalRotation = 0;
+      state.lastAngle = state.initialAngle;
+      state.totalRotation = 0;
       
-      this._debug(`터치 회전 시작: 초기 각도=${rotateTracking.initialAngle.toFixed(2)}°, 중심=(${rotateTracking.centerX.toFixed(0)}, ${rotateTracking.centerY.toFixed(0)})`);
+      this._debug(`Touch rotation start: initial angle=${state.initialAngle.toFixed(2)}°, center=(${state.centerX.toFixed(0)}, ${state.centerY.toFixed(0)})`);
     };
     
+    // Touch move handler
     const touchMoveHandler = (event) => {
-      if (!rotateTracking.active || event.touches.length !== 2) return;
+      if (!state.active || event.touches.length !== 2) return;
       
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
-      // 터치 식별
+      // Identify touches using stored IDs
       let touch1, touch2;
       const t1 = event.touches[0];
       const t2 = event.touches[1];
       
-      // 터치 정렬 (ID 순서대로)
-      if (t1.identifier === rotateTracking.touch1.id && 
-          t2.identifier === rotateTracking.touch2.id) {
+      // Match touches to our stored touch IDs
+      if (t1.identifier === state.touch1.id && 
+          t2.identifier === state.touch2.id) {
         touch1 = t1;
         touch2 = t2;
-      } else if (t1.identifier === rotateTracking.touch2.id && 
-                t2.identifier === rotateTracking.touch1.id) {
+      } else if (t1.identifier === state.touch2.id && 
+                t2.identifier === state.touch1.id) {
         touch1 = t2;
         touch2 = t1;
       } else {
-        // 식별된 터치가 아니면 무시
+        // Touch IDs don't match tracked touches
         return;
       }
       
-      // 현재 위치 업데이트
-      rotateTracking.touch1.currentX = touch1.clientX;
-      rotateTracking.touch1.currentY = touch1.clientY;
-      rotateTracking.touch2.currentX = touch2.clientX;
-      rotateTracking.touch2.currentY = touch2.clientY;
+      // Update current positions
+      state.touch1.currentX = touch1.clientX;
+      state.touch1.currentY = touch1.clientY;
+      state.touch2.currentX = touch2.clientX;
+      state.touch2.currentY = touch2.clientY;
       
-      // 중심점 업데이트
+      // Update center point
       const newCenterX = (touch1.clientX + touch2.clientX) / 2;
       const newCenterY = (touch1.clientY + touch2.clientY) / 2;
       
-      // 현재 각도 계산
+      // Calculate current angle
       const currentAngle = Math.atan2(
         touch2.clientY - touch1.clientY,
         touch2.clientX - touch1.clientX
       ) * 180 / Math.PI;
       
-      // 각도 변화 계산 (최단 경로)
-      let deltaAngle = currentAngle - rotateTracking.lastAngle;
+      // Calculate angle change (shortest path)
+      let deltaAngle = currentAngle - state.lastAngle;
       
-      // 최단 경로로 회전하기 위한 조정
+      // Adjust for shortest rotation path
       if (deltaAngle > 180) {
         deltaAngle -= 360;
       } else if (deltaAngle < -180) {
         deltaAngle += 360;
       }
       
-      // 변화가 너무 작으면 무시
+      // Ignore tiny angle changes
       if (Math.abs(deltaAngle) < 1) return;
       
-      // 총 회전 각도 업데이트
-      rotateTracking.totalRotation += deltaAngle;
-      rotateTracking.lastAngle = currentAngle;
+      // Update total rotation and last angle
+      state.totalRotation += deltaAngle;
+      state.lastAngle = currentAngle;
       
-      // 회전 이벤트 발생
+      // Create rotate event data
       const additionalData = {
         angle: currentAngle,
-        rotation: rotateTracking.totalRotation,
+        rotation: state.totalRotation,
         deltaAngle: deltaAngle,
         center: {
           x: newCenterX,
@@ -1498,101 +1718,114 @@ class UnifiedPointerEvents {
         ]
       };
       
-      this._debug(`터치 회전 감지: 각도=${currentAngle.toFixed(2)}°, 델타=${deltaAngle.toFixed(2)}°, 총=${rotateTracking.totalRotation.toFixed(2)}°`);
+      this._debug(`Touch rotation: angle=${currentAngle.toFixed(2)}°, delta=${deltaAngle.toFixed(2)}°, total=${state.totalRotation.toFixed(2)}°`);
       callback(this._createUnifiedEvent(event, 'rotate', additionalData));
     };
     
+    // Touch end handler
     const touchEndHandler = (event) => {
-      if (!rotateTracking.active) return;
+      if (!state.active) return;
       
-      // 터치 개수 확인
+      // End rotation when fewer than 2 touches remain
       if (event.touches.length < 2) {
-        rotateTracking.active = false;
-        this._debug('터치 회전 종료: 터치 손실');
+        state.active = false;
+        this._debug('Touch rotation ended: touch lost');
       }
     };
     
-    // 휠 이벤트 등록 (마우스 회전)
-    element.addEventListener('wheel', wheelHandler, options);
-    listenerInfo.nativeListeners.push({
-      type: 'wheel',
-      handler: wheelHandler,
-      element,
-      options
-    });
-    
-    // 펜 회전 이벤트 등록 (포인터 이벤트 지원 시)
-    if (hasPointerEvents) {
-      element.addEventListener('pointerdown', penRotationHandler, options);
-      element.addEventListener('pointermove', penRotationHandler, options);
-      element.addEventListener('pointerup', penEndHandler, options);
-      element.addEventListener('pointercancel', penEndHandler, options);
-      element.addEventListener('pointerleave', penEndHandler, options);
-      
-      listenerInfo.nativeListeners.push(
-        { type: 'pointerdown', handler: penRotationHandler, element, options },
-        { type: 'pointermove', handler: penRotationHandler, element, options },
-        { type: 'pointerup', handler: penEndHandler, element, options },
-        { type: 'pointercancel', handler: penEndHandler, element, options },
-        { type: 'pointerleave', handler: penEndHandler, element, options }
-      );
+    // Register wheel event for mouse rotation
+    try {
+      element.addEventListener('wheel', wheelHandler, options);
+      listenerInfo.nativeListeners.push({
+        type: 'wheel',
+        handler: wheelHandler,
+        element,
+        options
+      });
+    } catch (error) {
+      this._debug('Failed to add wheel handler:', error.message);
     }
     
-    // 터치 회전 이벤트 등록 (터치 이벤트 지원 시)
+    // Register pen rotation handlers
+    if (hasPointerEvents) {
+      try {
+        element.addEventListener('pointerdown', penRotationHandler, options);
+        element.addEventListener('pointermove', penRotationHandler, options);
+        element.addEventListener('pointerup', penEndHandler, options);
+        element.addEventListener('pointercancel', penEndHandler, options);
+        element.addEventListener('pointerleave', penEndHandler, options);
+        
+        listenerInfo.nativeListeners.push(
+          { type: 'pointerdown', handler: penRotationHandler, element, options },
+          { type: 'pointermove', handler: penRotationHandler, element, options },
+          { type: 'pointerup', handler: penEndHandler, element, options },
+          { type: 'pointercancel', handler: penEndHandler, element, options },
+          { type: 'pointerleave', handler: penEndHandler, element, options }
+        );
+      } catch (error) {
+        this._debug('Failed to add pen rotation handlers:', error.message);
+      }
+    }
+    
+    // Register touch rotation handlers
     if (hasTouchEvents) {
-      element.addEventListener('touchstart', touchStartHandler, options);
-      element.addEventListener('touchmove', touchMoveHandler, options);
-      element.addEventListener('touchend', touchEndHandler, options);
-      element.addEventListener('touchcancel', touchEndHandler, options);
-      
-      listenerInfo.nativeListeners.push(
-        { type: 'touchstart', handler: touchStartHandler, element, options },
-        { type: 'touchmove', handler: touchMoveHandler, element, options },
-        { type: 'touchend', handler: touchEndHandler, element, options },
-        { type: 'touchcancel', handler: touchEndHandler, element, options }
-      );
+      try {
+        element.addEventListener('touchstart', touchStartHandler, options);
+        element.addEventListener('touchmove', touchMoveHandler, options);
+        element.addEventListener('touchend', touchEndHandler, options);
+        element.addEventListener('touchcancel', touchEndHandler, options);
+        
+        listenerInfo.nativeListeners.push(
+          { type: 'touchstart', handler: touchStartHandler, element, options },
+          { type: 'touchmove', handler: touchMoveHandler, element, options },
+          { type: 'touchend', handler: touchEndHandler, element, options },
+          { type: 'touchcancel', handler: touchEndHandler, element, options }
+        );
+      } catch (error) {
+        this._debug('Failed to add touch rotation handlers:', error.message);
+      }
     }
   }
 
   /**
-   * 핀치줌 제스처 이벤트 설정
-   * - 마우스: Ctrl+Alt+휠로 줌
-   * - 터치: 두 손가락 핀치줌 (추가됨)
+   * Sets up pinch zoom event handlers
    * @private
    */
-  _setupPinchZoomEvents(element, callback, options, listenerId, listenerInfo, pinchZoomStep) {
-    const state = listenerInfo.state;
-    const pinchZoomTracking = state.pinchZoomTracking;
-    
-    // 터치 이벤트 지원 여부 확인
-    const hasTouchEvents = 'ontouchstart' in window;
+  _setupPinchZoomEvents(element, callback, options, listenerId, listenerInfo) {
+    const state = listenerInfo.state.pinchzoom;
+    const hasTouchEvents = this.features.touch;
+    const pinchZoomStep = options.pinchZoomStep;
     const touchFingerDistance = this.defaults.touchFingerDistance;
     
-    // 마우스 휠 이벤트 핸들러 (Ctrl+Alt+휠)
+    // Wheel event handler (Ctrl+Alt+wheel)
     const wheelHandler = (event) => {
-      // Ctrl+Alt 키를 누른 상태에서만 핀치줌 처리
+      // Only handle Ctrl+Alt+wheel for pinchzoom
       if (!(event.ctrlKey && event.altKey)) return;
       
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
-      // 줌 배율 계산 (휠 델타에 비례)
+      // Calculate zoom factor based on wheel delta
       const delta = event.deltaY || event.detail || event.wheelDelta;
-      const zoomDelta = delta > 0 ? (1 - pinchZoomStep) : (1 + pinchZoomStep); // 휠 방향에 따라 줌 방향 결정
+      const zoomDelta = delta > 0 ? (1 - pinchZoomStep) : (1 + pinchZoomStep);
       
-      // 현재 배율 업데이트
-      pinchZoomTracking.scale *= zoomDelta;
+      // Update scale value
+      state.scale *= zoomDelta;
       
-      // 최소/최대 배율 제한
-      pinchZoomTracking.scale = Math.max(
+      // Limit scale to min/max values
+      state.scale = Math.max(
         this.defaults.minScale, 
-        Math.min(this.defaults.maxScale, pinchZoomTracking.scale)
+        Math.min(this.defaults.maxScale, state.scale)
       );
       
-      // 핀치줌 이벤트 발생
+      // Create pinchzoom event data
       const additionalData = {
-        scale: pinchZoomTracking.scale,
+        scale: state.scale,
         deltaScale: zoomDelta,
         center: {
           x: event.clientX,
@@ -1602,34 +1835,39 @@ class UnifiedPointerEvents {
         isWheel: true
       };
       
-      this._debug(`마우스 핀치줌 감지: 배율=${pinchZoomTracking.scale.toFixed(2)}, 델타=${zoomDelta.toFixed(2)}`);
+      this._debug(`Mouse pinchzoom: scale=${state.scale.toFixed(2)}, delta=${zoomDelta.toFixed(2)}`);
       callback(this._createUnifiedEvent(event, 'pinchzoom', additionalData));
     };
     
-    // 터치 핀치줌 이벤트 핸들러
+    // Touch start handler
     const touchStartHandler = (event) => {
+      // Need exactly two touches for pinchzoom
       if (event.touches.length !== 2) return;
       
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
       const touch1 = event.touches[0];
       const touch2 = event.touches[1];
       
-      // 두 손가락 사이의 거리 계산
+      // Calculate distance between touches
       const dx = touch2.clientX - touch1.clientX;
       const dy = touch2.clientY - touch1.clientY;
       const distance = Math.sqrt(dx * dx + dy * dy);
       
-      // 손가락 사이의 거리가 충분한지 확인
+      // Ensure touches are far enough apart
       if (distance < touchFingerDistance) {
         return;
       }
       
-      // 핀치줌 추적 초기화
-      pinchZoomTracking.active = true;
-      pinchZoomTracking.touch1 = {
+      // Initialize pinchzoom tracking
+      state.active = true;
+      state.touch1 = {
         id: touch1.identifier,
         startX: touch1.clientX,
         startY: touch1.clientY,
@@ -1637,7 +1875,7 @@ class UnifiedPointerEvents {
         currentY: touch1.clientY
       };
       
-      pinchZoomTracking.touch2 = {
+      state.touch2 = {
         id: touch2.identifier,
         startX: touch2.clientX,
         startY: touch2.clientY,
@@ -1645,85 +1883,90 @@ class UnifiedPointerEvents {
         currentY: touch2.clientY
       };
       
-      // 중심점 계산
+      // Calculate center point
       const centerX = (touch1.clientX + touch2.clientX) / 2;
       const centerY = (touch1.clientY + touch2.clientY) / 2;
       
-      // 초기 거리 계산
-      pinchZoomTracking.initialDistance = distance;
-      pinchZoomTracking.lastDistance = distance;
-      pinchZoomTracking.totalScale = 1.0;
+      // Store initial distance
+      state.initialDistance = distance;
+      state.lastDistance = distance;
+      state.totalScale = 1.0;
       
-      this._debug(`터치 핀치줌 시작: 초기 거리=${distance.toFixed(2)}px, 중심=(${centerX.toFixed(0)}, ${centerY.toFixed(0)})`);
+      this._debug(`Touch pinchzoom start: initial distance=${distance.toFixed(2)}px, center=(${centerX.toFixed(0)}, ${centerY.toFixed(0)})`);
     };
     
+    // Touch move handler
     const touchMoveHandler = (event) => {
-      if (!pinchZoomTracking.active || event.touches.length !== 2) return;
+      if (!state.active || event.touches.length !== 2) return;
       
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
-      // 터치 식별
+      // Identify touches using stored IDs
       let touch1, touch2;
       const t1 = event.touches[0];
       const t2 = event.touches[1];
       
-      // 터치 정렬 (ID 순서대로)
-      if (t1.identifier === pinchZoomTracking.touch1.id && 
-          t2.identifier === pinchZoomTracking.touch2.id) {
+      // Match touches to our stored touch IDs
+      if (t1.identifier === state.touch1.id && 
+          t2.identifier === state.touch2.id) {
         touch1 = t1;
         touch2 = t2;
-      } else if (t1.identifier === pinchZoomTracking.touch2.id && 
-                t2.identifier === pinchZoomTracking.touch1.id) {
+      } else if (t1.identifier === state.touch2.id && 
+                t2.identifier === state.touch1.id) {
         touch1 = t2;
         touch2 = t1;
       } else {
-        // 식별된 터치가 아니면 무시
+        // Touch IDs don't match tracked touches
         return;
       }
       
-      // 현재 위치 업데이트
-      pinchZoomTracking.touch1.currentX = touch1.clientX;
-      pinchZoomTracking.touch1.currentY = touch1.clientY;
-      pinchZoomTracking.touch2.currentX = touch2.clientX;
-      pinchZoomTracking.touch2.currentY = touch2.clientY;
+      // Update current positions
+      state.touch1.currentX = touch1.clientX;
+      state.touch1.currentY = touch1.clientY;
+      state.touch2.currentX = touch2.clientX;
+      state.touch2.currentY = touch2.clientY;
       
-      // 중심점 계산
+      // Calculate center point
       const centerX = (touch1.clientX + touch2.clientX) / 2;
       const centerY = (touch1.clientY + touch2.clientY) / 2;
       
-      // 현재 거리 계산
+      // Calculate current distance
       const dx = touch2.clientX - touch1.clientX;
       const dy = touch2.clientY - touch1.clientY;
       const currentDistance = Math.sqrt(dx * dx + dy * dy);
       
-      // 배율 변화 계산
-      const scaleFactor = currentDistance / pinchZoomTracking.lastDistance;
+      // Calculate scale factor
+      const scaleFactor = currentDistance / state.lastDistance;
       
-      // 변화가 너무 작거나 너무 크면 무시
-      if (scaleFactor < 0.9 || scaleFactor > 1.1) {
-        pinchZoomTracking.lastDistance = currentDistance;
+      // Filter out extreme changes that might be due to touch detection errors
+      if (scaleFactor < 0.5 || scaleFactor > 2.0) {
+        state.lastDistance = currentDistance;
         return;
       }
       
-      // 총 배율 업데이트
-      pinchZoomTracking.totalScale *= scaleFactor;
+      // Update total scale
+      state.totalScale *= scaleFactor;
       
-      // 최소/최대 배율 제한
-      pinchZoomTracking.totalScale = Math.max(
+      // Limit scale to min/max values
+      state.totalScale = Math.max(
         this.defaults.minScale, 
-        Math.min(this.defaults.maxScale, pinchZoomTracking.totalScale)
+        Math.min(this.defaults.maxScale, state.totalScale)
       );
       
-      // 마지막 거리 업데이트
-      pinchZoomTracking.lastDistance = currentDistance;
+      // Update last distance
+      state.lastDistance = currentDistance;
       
-      // 핀치줌 이벤트 발생
+      // Create pinchzoom event data
       const additionalData = {
-        scale: pinchZoomTracking.totalScale,
+        scale: state.totalScale,
         deltaScale: scaleFactor,
-        initialDistance: pinchZoomTracking.initialDistance,
+        initialDistance: state.initialDistance,
         currentDistance: currentDistance,
         center: {
           x: centerX,
@@ -1736,146 +1979,213 @@ class UnifiedPointerEvents {
         ]
       };
       
-      this._debug(`터치 핀치줌 감지: 배율=${pinchZoomTracking.totalScale.toFixed(2)}, 델타=${scaleFactor.toFixed(2)}, 거리=${currentDistance.toFixed(2)}px`);
+      this._debug(`Touch pinchzoom: scale=${state.totalScale.toFixed(2)}, delta=${scaleFactor.toFixed(2)}, distance=${currentDistance.toFixed(2)}px`);
       callback(this._createUnifiedEvent(event, 'pinchzoom', additionalData));
     };
     
+    // Touch end handler
     const touchEndHandler = (event) => {
-      if (!pinchZoomTracking.active) return;
+      if (!state.active) return;
       
-      // 터치 개수 확인
+      // End pinchzoom when fewer than 2 touches remain
       if (event.touches.length < 2) {
-        pinchZoomTracking.active = false;
-        this._debug('터치 핀치줌 종료: 터치 손실');
+        state.active = false;
+        this._debug('Touch pinchzoom ended: touch lost');
       }
     };
     
-    // 휠 이벤트 등록 (마우스 핀치줌)
-    element.addEventListener('wheel', wheelHandler, options);
-    listenerInfo.nativeListeners.push({
-      type: 'wheel',
-      handler: wheelHandler,
-      element,
-      options
-    });
+    // Register wheel event for mouse pinchzoom
+    try {
+      element.addEventListener('wheel', wheelHandler, options);
+      listenerInfo.nativeListeners.push({
+        type: 'wheel',
+        handler: wheelHandler,
+        element,
+        options
+      });
+    } catch (error) {
+      this._debug('Failed to add wheel handler:', error.message);
+    }
     
-    // 터치 핀치줌 이벤트 등록
+    // Register touch pinchzoom handlers
     if (hasTouchEvents) {
-      element.addEventListener('touchstart', touchStartHandler, options);
-      element.addEventListener('touchmove', touchMoveHandler, options);
-      element.addEventListener('touchend', touchEndHandler, options);
-      element.addEventListener('touchcancel', touchEndHandler, options);
-      
-      listenerInfo.nativeListeners.push(
-        { type: 'touchstart', handler: touchStartHandler, element, options },
-        { type: 'touchmove', handler: touchMoveHandler, element, options },
-        { type: 'touchend', handler: touchEndHandler, element, options },
-        { type: 'touchcancel', handler: touchEndHandler, element, options }
-      );
+      try {
+        element.addEventListener('touchstart', touchStartHandler, options);
+        element.addEventListener('touchmove', touchMoveHandler, options);
+        element.addEventListener('touchend', touchEndHandler, options);
+        element.addEventListener('touchcancel', touchEndHandler, options);
+        
+        listenerInfo.nativeListeners.push(
+          { type: 'touchstart', handler: touchStartHandler, element, options },
+          { type: 'touchmove', handler: touchMoveHandler, element, options },
+          { type: 'touchend', handler: touchEndHandler, element, options },
+          { type: 'touchcancel', handler: touchEndHandler, element, options }
+        );
+      } catch (error) {
+        this._debug('Failed to add touch pinchzoom handlers:', error.message);
+      }
     }
   }
 
   /**
-   * 드래그 이벤트를 설정합니다.
+   * Sets up drag events
    * @private
    */
   _setupDragEvents(element, eventType, callback, options, listenerId, listenerInfo) {
-    // 옵션 설정
-    const preventDefault = options.preventDefault || false;
-    const range = options.range || null;
-    const keepState = options.keepState !== false;
-    const usePointerCapture = options.usePointerCapture !== undefined 
-      ? options.usePointerCapture 
-      : this.defaults.usePointerCapture;
-    
-    // 상태 초기화 - 리스너 정보 내에 상태 저장
-    const state = listenerInfo.state;
-    state.active = false;
-    state.startX = 0;
-    state.startY = 0;
-    state.currentX = 0;
-    state.currentY = 0;
-    state.range = range;
-    state.keepState = keepState;
-    state.usePointerCapture = usePointerCapture;
-    state.capturedPointer = null;
-    state.elementRect = null;
-    
-    // 리스너 옵션 설정
-    const listenerOptions = {
-      ...options,
-      passive: options.preventDefault ? false : options.passive
+    // Validate and merge options
+    const mergedOptions = {
+      preventDefault: !!options.preventDefault,
+      range: this._validateRangeConstraints(options.range),
+      keepState: options.keepState !== false,
+      usePointerCapture: options.usePointerCapture !== undefined 
+        ? options.usePointerCapture 
+        : this.defaults.usePointerCapture,
+      throttleMs: options.throttle || this.defaults.throttleMs
     };
     
-    // 이벤트 핸들러 설정
+    // Initialize state
+    const state = listenerInfo.state;
+    state.drag = state.drag || {
+      active: false,
+      startX: 0,
+      startY: 0,
+      currentX: 0,
+      currentY: 0,
+      range: mergedOptions.range,
+      keepState: mergedOptions.keepState,
+      usePointerCapture: mergedOptions.usePointerCapture,
+      capturedPointer: null,
+      elementRect: null,
+      cumulativeDelta: { x: 0, y: 0 },
+      currentDeltaX: 0,
+      currentDeltaY: 0,
+      lastMoveTime: 0,
+      inertiaAnimation: null
+    };
+    
+    // Set up event handlers based on type
     if (eventType === 'dragstart') {
-      this._setupDragStartEvents(element, callback, listenerOptions, listenerId, listenerInfo);
+      this._setupDragStartEvents(element, callback, mergedOptions, listenerId, listenerInfo);
     } 
     else if (eventType === 'drag') {
-      this._setupDragMoveEvents(element, callback, listenerOptions, listenerId, listenerInfo);
+      this._setupDragMoveEvents(element, callback, mergedOptions, listenerId, listenerInfo);
     } 
     else if (eventType === 'dragend') {
-      this._setupDragEndEvents(element, callback, listenerOptions, listenerId, listenerInfo);
+      this._setupDragEndEvents(element, callback, mergedOptions, listenerId, listenerInfo);
     }
   }
 
   /**
-   * 드래그 시작 이벤트 설정
+   * Validates range constraints for drag
+   * @private
+   * @param {Object} range - Range object to validate
+   * @returns {Object|null} Validated range object or null
+   */
+  _validateRangeConstraints(range) {
+    if (!range) return null;
+    
+    const validatedRange = {};
+    
+    // Validate X range
+    if (range.x) {
+      if (Array.isArray(range.x) && range.x.length === 2 && 
+          typeof range.x[0] === 'number' && typeof range.x[1] === 'number') {
+        validatedRange.x = range.x;
+      } else {
+        this._debug('Invalid X range specified, ignoring');
+      }
+    }
+    
+    // Validate Y range
+    if (range.y) {
+      if (Array.isArray(range.y) && range.y.length === 2 && 
+          typeof range.y[0] === 'number' && typeof range.y[1] === 'number') {
+        validatedRange.y = range.y;
+      } else {
+        this._debug('Invalid Y range specified, ignoring');
+      }
+    }
+    
+    return Object.keys(validatedRange).length > 0 ? validatedRange : null;
+  }
+
+  /**
+   * Sets up drag start events
    * @private
    */
   _setupDragStartEvents(element, callback, options, listenerId, listenerInfo) {
-    const state = listenerInfo.state;
-    const hasPointerEvents = 'PointerEvent' in window;
+    const state = listenerInfo.state.drag;
+    const hasPointerEvents = this.features.pointerEvents;
     
-    // 드래그 시작 핸들러
+    // Drag start handler
     const dragStartHandler = (event) => {
       if (options.preventDefault) {
-        event.preventDefault();
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
       }
       
       const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
       const clientY = event.clientY || (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
       const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
       
-      // 이미 드래그 중이면 무시
+      // Ignore if already tracking same pointer
       if (state.active && state.capturedPointer === pointerId) {
         return;
       }
       
-      // 요소의 경계 정보 저장 (상대 위치 계산을 위해)
-      state.elementRect = element.getBoundingClientRect();
+      // Store element rect for relative position calculations
+      try {
+        state.elementRect = element.getBoundingClientRect();
+      } catch (e) {
+        this._debug('Failed to get element rect:', e.message);
+        state.elementRect = { left: 0, top: 0, width: 0, height: 0 };
+      }
       
-      // 상태 초기화
+      // Initialize drag session
       state.active = true;
       state.startX = clientX;
       state.startY = clientY;
       state.currentX = clientX;
       state.currentY = clientY;
       state.capturedPointer = pointerId;
+      state.currentDeltaX = 0;
+      state.currentDeltaY = 0;
+      state.lastMoveTime = Date.now();
       
-      // 포인터 캡처 설정 (지원되는 경우)
-      if (state.usePointerCapture && 'setPointerCapture' in element && pointerId !== undefined) {
-        this._debug(`드래그 이벤트에 대한 포인터 캡처 설정: pointerId=${pointerId}`);
+      // Stop any ongoing inertia animation
+      if (state.inertiaAnimation) {
+        cancelAnimationFrame(state.inertiaAnimation);
+        state.inertiaAnimation = null;
+      }
+      
+      // Set pointer capture if supported
+      if (state.usePointerCapture && this.features.pointerCapture && pointerId !== undefined) {
+        this._debug(`Setting pointer capture for drag: pointerId=${pointerId}`);
         try {
           element.setPointerCapture(pointerId);
         } catch (e) {
-          this._debug('포인터 캡처 설정 실패:', e.message);
+          this._debug('Failed to set pointer capture:', e.message);
         }
       }
       
-      // 드래그 시작 이벤트 발생
+      // Create drag start event data
       const additionalData = {
         startX: state.startX,
         startY: state.startY,
-        deltaX: 0,
-        deltaY: 0,
+        deltaX: state.cumulativeDelta.x,
+        deltaY: state.cumulativeDelta.y,
         elementRect: state.elementRect
       };
       
+      // Trigger dragstart event
+      this._debug(`Drag start: X=${state.startX}, Y=${state.startY}`);
       callback(this._createUnifiedEvent(event, 'dragstart', additionalData));
     };
     
-    // 이벤트 리스너 등록 (헬퍼 함수 사용)
+    // Register event listeners
     this._registerEventListeners(
       element, 
       hasPointerEvents, 
@@ -1886,462 +2196,691 @@ class UnifiedPointerEvents {
   }
 
   /**
-   * 드래그 이동 이벤트 설정
+   * Sets up drag move events
    * @private
    */
   _setupDragMoveEvents(element, callback, options, listenerId, listenerInfo) {
-  const state = listenerInfo.state;
-  const hasPointerEvents = 'PointerEvent' in window;
-  
-  // 누적 이동량 추적을 위한 변수 추가
-  if (!state.cumulativeDelta) {
-    state.cumulativeDelta = {
-      x: 0,
-      y: 0
-    };
-  }
-  
-  // 드래그 시작 핸들러
-  const dragStartHandler = (event) => {
-    if (options.preventDefault) {
-      event.preventDefault();
+    const state = listenerInfo.state.drag;
+    const hasPointerEvents = this.features.pointerEvents;
+    const throttleMs = options.throttleMs;
+    
+    // Initialize cumulative delta if needed
+    if (!state.cumulativeDelta) {
+      state.cumulativeDelta = { x: 0, y: 0 };
     }
     
-    const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
-    const clientY = event.clientY || (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
-    const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
-    
-    // 이미 드래그 중이면 무시
-    if (state.active && state.capturedPointer === pointerId) {
-      return;
-    }
-    
-    // 요소의 경계 정보 저장 (상대 위치 계산을 위해)
-    state.elementRect = element.getBoundingClientRect();
-    
-    // 상태 초기화
-    state.active = true;
-    state.startX = clientX;
-    state.startY = clientY;
-    state.currentX = clientX;
-    state.currentY = clientY;
-    state.capturedPointer = pointerId;
-    
-    // 현재 드래그 이동량 초기화 (누적값은 유지)
-    state.currentDeltaX = 0;
-    state.currentDeltaY = 0;
-    
-    // 포인터 캡처 설정 (지원되는 경우)
-    if (state.usePointerCapture && 'setPointerCapture' in element && pointerId !== undefined) {
-      this._debug(`드래그 이벤트에 대한 포인터 캡처 설정: pointerId=${pointerId}`);
+    // Drag start handler
+    const dragStartHandler = (event) => {
+      if (options.preventDefault) {
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
+      }
+      
+      const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
+      const clientY = event.clientY || (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
+      const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
+      
+      // Ignore if already tracking same pointer
+      if (state.active && state.capturedPointer === pointerId) {
+        return;
+      }
+      
+      // Store element rect for relative position calculations
       try {
-        element.setPointerCapture(pointerId);
+        state.elementRect = element.getBoundingClientRect();
       } catch (e) {
-        this._debug('포인터 캡처 설정 실패:', e.message);
+        this._debug('Failed to get element rect:', e.message);
+        state.elementRect = { left: 0, top: 0, width: 0, height: 0 };
       }
-    }
-    
-    // 드래그 관련 다른 리스너들이 드래그 시작 이벤트를 처리할 수 있도록 발생시킴
-    const dragStartEvent = this._createUnifiedEvent(event, 'dragstart', {
-      startX: state.startX,
-      startY: state.startY,
-      deltaX: state.cumulativeDelta.x,
-      deltaY: state.cumulativeDelta.y,
-      elementRect: state.elementRect
-    });
-    
-    // dragstart 이벤트에 대한 콜백이 등록되어 있는지 확인
-    let hasDragStartCallback = false;
-    this.eventListeners.forEach((info, id) => {
-      if (info.element === element && info.eventType === 'dragstart') {
-        info.callback(dragStartEvent);
-        hasDragStartCallback = true;
+      
+      // Initialize drag session
+      state.active = true;
+      state.startX = clientX;
+      state.startY = clientY;
+      state.currentX = clientX;
+      state.currentY = clientY;
+      state.capturedPointer = pointerId;
+      state.currentDeltaX = 0;
+      state.currentDeltaY = 0;
+      state.lastMoveTime = Date.now();
+      
+      // Stop any ongoing inertia animation
+      if (state.inertiaAnimation) {
+        cancelAnimationFrame(state.inertiaAnimation);
+        state.inertiaAnimation = null;
       }
-    });
-  };
-  
-  // 드래그 이동 핸들러
-  const dragMoveHandler = (event) => {
-    if (!state.active) return;
-    const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
-    
-    // 다른 포인터의 이동은 무시
-    if (state.capturedPointer !== pointerId) {
-      return;
-    }
-    
-    if (options.preventDefault) {
-      event.preventDefault();
-    }
-    
-    const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
-    const clientY = event.clientY || (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
-    
-    // 현재 위치 업데이트
-    state.currentX = clientX;
-    state.currentY = clientY;
-    
-    // 현재 드래그 세션의 델타 계산
-    state.currentDeltaX = clientX - state.startX;
-    state.currentDeltaY = clientY - state.startY;
-    
-    // 누적 + 현재 델타 계산
-    const totalDeltaX = state.cumulativeDelta.x + state.currentDeltaX;
-    const totalDeltaY = state.cumulativeDelta.y + state.currentDeltaY;
-    
-    // 범위 제한 확인
-    let constrainedDeltaX = totalDeltaX;
-    let constrainedDeltaY = totalDeltaY;
-    let isOutOfBounds = false;
-    let isOutOfBoundsX = false;  // X축 범위 초과 여부
-    let isOutOfBoundsY = false;  // Y축 범위 초과 여부
-    
-    if (state.range && state.range !== 'infinite') {
-      if (state.range.x) {
-        const [minX, maxX] = state.range.x;
-        if (totalDeltaX < minX) {
-          constrainedDeltaX = minX;
-          isOutOfBounds = true;
-          isOutOfBoundsX = true;  // X축 범위 초과
-        } else if (totalDeltaX > maxX) {
-          constrainedDeltaX = maxX;
-          isOutOfBounds = true;
-          isOutOfBoundsX = true;  // X축 범위 초과
+      
+      // Set pointer capture if supported
+      if (state.usePointerCapture && this.features.pointerCapture && pointerId !== undefined) {
+        this._debug(`Setting pointer capture for drag: pointerId=${pointerId}`);
+        try {
+          element.setPointerCapture(pointerId);
+        } catch (e) {
+          this._debug('Failed to set pointer capture:', e.message);
         }
       }
       
-      if (state.range.y) {
-        const [minY, maxY] = state.range.y;
-        if (totalDeltaY < minY) {
-          constrainedDeltaY = minY;
-          isOutOfBounds = true;
-          isOutOfBoundsY = true;  // Y축 범위 초과
-        } else if (totalDeltaY > maxY) {
-          constrainedDeltaY = maxY;
-          isOutOfBounds = true;
-          isOutOfBoundsY = true;  // Y축 범위 초과
+      // Create drag start event data
+      const additionalData = {
+        startX: state.startX,
+        startY: state.startY,
+        deltaX: state.cumulativeDelta.x,
+        deltaY: state.cumulativeDelta.y,
+        elementRect: state.elementRect
+      };
+      
+      // Trigger internal dragstart event
+      this._debug(`Drag start (from move handler): X=${state.startX}, Y=${state.startY}`);
+      
+      // Check for existing dragstart listeners
+      let hasDragStartCallback = false;
+      this.eventListeners.forEach((info, id) => {
+        if (info.element === element && info.eventType === 'dragstart') {
+          // Create unified event for dragstart
+          const dragStartEvent = this._createUnifiedEvent(event, 'dragstart', additionalData);
+          info.callback(dragStartEvent);
+          hasDragStartCallback = true;
         }
+      });
+      
+      // Log if no dragstart listeners found
+      if (!hasDragStartCallback) {
+        this._debug('No dragstart listeners found for this element');
       }
-    }
-    
-    // 드래그 이벤트 발생
-    const additionalData = {
-      startX: state.startX,
-      startY: state.startY,
-      currentX: state.currentX,
-      currentY: state.currentY,
-      deltaX: totalDeltaX,              // 누적 + 현재 델타
-      deltaY: totalDeltaY,              // 누적 + 현재 델타
-      constrainedDeltaX: constrainedDeltaX,  // 범위 제한 적용된 델타
-      constrainedDeltaY: constrainedDeltaY,  // 범위 제한 적용된 델타
-      currentDeltaX: state.currentDeltaX,    // 현재 드래그 세션의 델타
-      currentDeltaY: state.currentDeltaY,    // 현재 드래그 세션의 델타
-      isOutOfBounds,
-      isOutOfBoundsX,  // X축 범위 초과 여부 전달
-      isOutOfBoundsY,  // Y축 범위 초과 여부 전달
-      elementRect: state.elementRect // 요소 경계 정보 포함
     };
     
-    callback(this._createUnifiedEvent(event, 'drag', additionalData));
-  };
-  
-  // 드래그 종료 핸들러
-  const dragEndHandler = (event) => {
-    if (!state.active) return;
-    
-    const pointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
-    
-    // 다른 포인터의 이벤트는 무시
-    if (state.capturedPointer !== pointerId) {
-      return;
-    }
-    
-    if (options.preventDefault) {
-      event.preventDefault();
-    }
-    
-    // keepState 옵션이 활성화된 경우, 누적 델타 업데이트
-    if (options.keepState) {
-      // 현재 드래그 세션의 델타를 누적
-      state.cumulativeDelta.x += state.currentDeltaX;
-      state.cumulativeDelta.y += state.currentDeltaY;
+    // Drag move handler
+    const dragMoveHandler = (event) => {
+      if (!state.active) return;
       
-      // 범위 제한 적용
-      if (state.range && state.range !== 'infinite') {
+      const pointerId = event.pointerId || (event.touches && event.touches[0] ? event.touches[0].identifier : 1);
+      
+      // Ignore events from other pointers
+      if (state.capturedPointer !== pointerId) {
+        return;
+      }
+      
+      if (options.preventDefault) {
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
+      }
+      
+      // Apply throttling
+      const now = Date.now();
+      if (throttleMs > 0 && now - state.lastMoveTime < throttleMs) {
+        return; // Skip processing for better performance
+      }
+      state.lastMoveTime = now;
+      
+      const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
+      const clientY = event.clientY || (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
+      
+      // Update current position
+      state.currentX = clientX;
+      state.currentY = clientY;
+      
+      // Calculate deltas
+      state.currentDeltaX = clientX - state.startX;
+      state.currentDeltaY = clientY - state.startY;
+      
+      // Calculate total delta (cumulative + current)
+      const totalDeltaX = state.cumulativeDelta.x + state.currentDeltaX;
+      const totalDeltaY = state.cumulativeDelta.y + state.currentDeltaY;
+      
+      // Apply range constraints
+      let constrainedDeltaX = totalDeltaX;
+      let constrainedDeltaY = totalDeltaY;
+      let isOutOfBounds = false;
+      let isOutOfBoundsX = false;
+      let isOutOfBoundsY = false;
+      
+      // Check range constraints
+      if (state.range) {
         if (state.range.x) {
           const [minX, maxX] = state.range.x;
-          state.cumulativeDelta.x = Math.max(minX, Math.min(maxX, state.cumulativeDelta.x));
+          if (totalDeltaX < minX) {
+            constrainedDeltaX = minX;
+            isOutOfBounds = true;
+            isOutOfBoundsX = true;
+          } else if (totalDeltaX > maxX) {
+            constrainedDeltaX = maxX;
+            isOutOfBounds = true;
+            isOutOfBoundsX = true;
+          }
         }
         
         if (state.range.y) {
           const [minY, maxY] = state.range.y;
-          state.cumulativeDelta.y = Math.max(minY, Math.min(maxY, state.cumulativeDelta.y));
+          if (totalDeltaY < minY) {
+            constrainedDeltaY = minY;
+            isOutOfBounds = true;
+            isOutOfBoundsY = true;
+          } else if (totalDeltaY > maxY) {
+            constrainedDeltaY = maxY;
+            isOutOfBounds = true;
+            isOutOfBoundsY = true;
+          }
         }
       }
-    } else {
-      // keepState가 false인 경우 누적 델타 초기화
-      state.cumulativeDelta = { x: 0, y: 0 };
-    }
+      
+      // Create drag event data
+      const additionalData = {
+        startX: state.startX,
+        startY: state.startY,
+        currentX: state.currentX,
+        currentY: state.currentY,
+        deltaX: totalDeltaX,
+        deltaY: totalDeltaY,
+        constrainedDeltaX,
+        constrainedDeltaY,
+        currentDeltaX: state.currentDeltaX,
+        currentDeltaY: state.currentDeltaY,
+        isOutOfBounds,
+        isOutOfBoundsX,
+        isOutOfBoundsY,
+        elementRect: state.elementRect
+      };
+      
+      // Trigger drag event
+      callback(this._createUnifiedEvent(event, 'drag', additionalData));
+    };
     
-    // dragend 이벤트 발생
-    const dragEndEvent = this._createUnifiedEvent(event, 'dragend', {
-      startX: state.startX,
-      startY: state.startY,
-      endX: state.currentX,
-      endY: state.currentY,
-      deltaX: state.cumulativeDelta.x,
-      deltaY: state.cumulativeDelta.y,
-      currentDeltaX: state.currentDeltaX,
-      currentDeltaY: state.currentDeltaY,
-      isOutOfBounds: false,
-      elementRect: state.elementRect // 요소 경계 정보 포함
-    });
-    
-    // dragend 이벤트에 대한 콜백이 등록되어 있는지 확인
-    let hasEndCallback = false;
-    this.eventListeners.forEach((info, id) => {
-      if (info.element === element && info.eventType === 'dragend') {
-        info.callback(dragEndEvent);
-        hasEndCallback = true;
+    // Drag end handler
+    const dragEndHandler = (event) => {
+      if (!state.active) return;
+      
+      const pointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
+      
+      // Ignore events from other pointers
+      if (state.capturedPointer !== pointerId) {
+        return;
       }
-    });
+      
+      if (options.preventDefault) {
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
+      }
+      
+      // Update cumulative delta if keeping state
+      if (options.keepState) {
+        // Add current session delta to cumulative delta
+        state.cumulativeDelta.x += state.currentDeltaX;
+        state.cumulativeDelta.y += state.currentDeltaY;
+        
+        // Apply range constraints to cumulative delta
+        if (state.range) {
+          if (state.range.x) {
+            const [minX, maxX] = state.range.x;
+            state.cumulativeDelta.x = Math.max(minX, Math.min(maxX, state.cumulativeDelta.x));
+          }
+          
+          if (state.range.y) {
+            const [minY, maxY] = state.range.y;
+            state.cumulativeDelta.y = Math.max(minY, Math.min(maxY, state.cumulativeDelta.y));
+          }
+        }
+      } else {
+        // Reset cumulative delta if not keeping state
+        state.cumulativeDelta = { x: 0, y: 0 };
+      }
+      
+      // Create dragend event
+      const dragEndEvent = this._createUnifiedEvent(event, 'dragend', {
+        startX: state.startX,
+        startY: state.startY,
+        endX: state.currentX,
+        endY: state.currentY,
+        deltaX: state.cumulativeDelta.x,
+        deltaY: state.cumulativeDelta.y,
+        currentDeltaX: state.currentDeltaX,
+        currentDeltaY: state.currentDeltaY,
+        duration: Date.now() - state.lastMoveTime,
+        isOutOfBounds: false,
+        elementRect: state.elementRect
+      });
+      
+      // Check for existing dragend listeners
+      let hasEndCallback = false;
+      this.eventListeners.forEach((info, id) => {
+        if (info.element === element && info.eventType === 'dragend') {
+          info.callback(dragEndEvent);
+          hasEndCallback = true;
+        }
+      });
+      
+      // Reset active state
+      state.active = false;
+      state.capturedPointer = null;
+      
+      // Release pointer capture
+      if (state.usePointerCapture && this.features.pointerCapture) {
+        try {
+          element.releasePointerCapture(pointerId);
+        } catch (e) {
+          this._debug('Failed to release pointer capture:', e.message);
+        }
+      }
+    };
     
-    // 상태 초기화 (누적 델타 제외)
-    state.active = false;
-    state.capturedPointer = null;
+    // Drag cancel handler
+    const dragCancelHandler = (event) => {
+      if (!state.active) return;
+      
+      const pointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
+      
+      // Ignore events from other pointers
+      if (state.capturedPointer !== pointerId) {
+        return;
+      }
+      
+      // Release pointer capture
+      if (state.usePointerCapture && this.features.pointerCapture) {
+        try {
+          element.releasePointerCapture(pointerId);
+        } catch (e) {
+          this._debug('Failed to release pointer capture:', e.message);
+        }
+      }
+      
+      // Reset state (keep cumulative delta)
+      state.active = false;
+      state.capturedPointer = null;
+      
+      this._debug('Drag canceled');
+    };
     
-    // 포인터 캡처 해제
-    if (state.usePointerCapture && 'releasePointerCapture' in element) {
+    // Register event listeners
+    this._registerEventListeners(
+      element, 
+      hasPointerEvents, 
+      [
+        { type: 'start', handler: dragStartHandler },
+        { type: 'move', handler: dragMoveHandler },
+        { type: 'end', handler: dragEndHandler },
+        { type: 'cancel', handler: dragCancelHandler }
+      ], 
+      options, 
+      listenerInfo
+    );
+    
+    // Add pointerleave handler for pointer events
+    if (hasPointerEvents) {
       try {
-        element.releasePointerCapture(pointerId);
-      } catch (e) {
-        this._debug('포인터 캡처 해제 실패:', e.message);
+        element.addEventListener('pointerleave', dragCancelHandler, options);
+        listenerInfo.nativeListeners.push({
+          type: 'pointerleave',
+          handler: dragCancelHandler,
+          element,
+          options
+        });
+      } catch (error) {
+        this._debug('Failed to add pointerleave handler:', error.message);
       }
     }
-  };
-  
-  // 드래그 취소 핸들러
-  const dragCancelHandler = (event) => {
-    if (!state.active) return;
-    
-    const pointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
-    
-    // 다른 포인터의 이벤트는 무시
-    if (state.capturedPointer !== pointerId) {
-      return;
-    }
-    
-    // 상태 초기화 (누적 델타는 유지)
-    state.active = false;
-    state.capturedPointer = null;
-    
-    // 포인터 캡처 해제
-    if (state.usePointerCapture && 'releasePointerCapture' in element) {
-      try {
-        element.releasePointerCapture(pointerId);
-      } catch (e) {
-        this._debug('포인터 캡처 해제 실패:', e.message);
-      }
-    }
-  };
-  
-  // 이벤트 리스너 등록 (헬퍼 함수 사용)
-  this._registerEventListeners(
-    element, 
-    hasPointerEvents, 
-    [
-      { type: 'start', handler: dragStartHandler },
-      { type: 'move', handler: dragMoveHandler },
-      { type: 'end', handler: dragEndHandler },
-      { type: 'cancel', handler: dragCancelHandler }
-    ], 
-    options, 
-    listenerInfo
-  );
-  
-  // 포인터 이벤트일 경우 pointerleave 이벤트도 등록
-  if (hasPointerEvents) {
-    element.addEventListener('pointerleave', dragCancelHandler, options);
-    listenerInfo.nativeListeners.push({
-      type: 'pointerleave',
-      handler: dragCancelHandler,
-      element,
-      options
-    });
   }
-}
 
   /**
-   * 드래그 종료 이벤트 설정
+   * Sets up drag end events
    * @private
    */
   _setupDragEndEvents(element, callback, options, listenerId, listenerInfo) {
-    // dragend 이벤트는 dragstart와 drag 이벤트에서 내부적으로 발생시키기 때문에
-    // 여기서는 별도의 리스너를 등록하지 않고, dragstart나 drag가 발생할 때 함께 처리됨
-    // 하지만 사용자가 직접 dragend만 등록한 경우를 위해 최소한의 placeholder 등록
-    const state = listenerInfo.state;
+    // We need to register an actual dragend handler for cases where users register
+    // only dragend listeners without drag/dragstart
+    const state = listenerInfo.state.drag;
+    const hasPointerEvents = this.features.pointerEvents;
     
-    // 상태 저장만 하고, 실제 이벤트 리스너는 등록하지 않음
-    // 실제 dragend 발생은 dragstart나 drag에서 처리
+    // Initialize state if needed
+    if (!state) {
+      listenerInfo.state.drag = {
+        active: false,
+        capturedPointer: null,
+        cumulativeDelta: { x: 0, y: 0 },
+        usePointerCapture: options.usePointerCapture !== undefined 
+          ? options.usePointerCapture 
+          : this.defaults.usePointerCapture
+      };
+    }
+    
+    // Drag end handler for standalone dragend listeners
+    const dragEndHandler = (event) => {
+      const pointerId = event.pointerId || (event.changedTouches && event.changedTouches[0] ? event.changedTouches[0].identifier : 1);
+      
+      // Get current element rect
+      let elementRect;
+      try {
+        elementRect = element.getBoundingClientRect();
+      } catch (e) {
+        this._debug('Failed to get element rect:', e.message);
+        elementRect = { left: 0, top: 0, width: 0, height: 0 };
+      }
+      
+      if (options.preventDefault) {
+        try {
+          event.preventDefault();
+        } catch (e) {
+          this._debug('preventDefault failed:', e.message);
+        }
+      }
+      
+      // Create dragend event with limited info
+      const dragEndEvent = this._createUnifiedEvent(event, 'dragend', {
+        deltaX: state.cumulativeDelta?.x || 0,
+        deltaY: state.cumulativeDelta?.y || 0,
+        elementRect: elementRect
+      });
+      
+      callback(dragEndEvent);
+    };
+    
+    // Register event listeners
+    this._registerEventListeners(
+      element, 
+      hasPointerEvents, 
+      [{ type: 'end', handler: dragEndHandler }], 
+      options, 
+      listenerInfo
+    );
   }
 
   /**
-   * 포인터 캡처를 설정합니다.
+   * Sets pointer capture
    * @private
+   * @param {HTMLElement} element - Element to capture pointer
+   * @param {number} pointerId - Pointer identifier
+   * @param {Object} event - Unified event object
+   * @returns {boolean} Success status
    */
   _setPointerCapture(element, pointerId, event) {
-    if (!element || !pointerId) return false;
+    if (!element || !pointerId) {
+      this._debug('Invalid element or pointerId for capture');
+      return false;
+    }
+    
+    // Check if pointer capture is supported
+    if (!this.features.pointerCapture) {
+      this._debug('Pointer capture not supported in this browser');
+      return false;
+    }
     
     try {
-      if ('setPointerCapture' in element) {
+      // Check if setPointerCapture method exists
+      if (typeof element.setPointerCapture === 'function') {
         element.setPointerCapture(pointerId);
-        this._debug(`포인터 캡처 설정: pointerId=${pointerId}`);
+        this._debug(`Pointer capture set: pointerId=${pointerId}, element=${element.tagName || 'element'}`);
         return true;
+      } else {
+        this._debug('setPointerCapture method not available on element');
       }
     } catch (e) {
-      this._debug('포인터 캡처 설정 실패:', e.message);
+      this._debug('Failed to set pointer capture:', e.message);
     }
     
     return false;
   }
   
   /**
-   * 포인터 캡처를 해제합니다.
+   * Releases pointer capture
    * @private
+   * @param {HTMLElement} element - Element with captured pointer
+   * @param {number} pointerId - Pointer identifier
+   * @param {Object} event - Unified event object
+   * @returns {boolean} Success status
    */
   _releasePointerCapture(element, pointerId, event) {
-    if (!element || !pointerId) return false;
+    if (!element || !pointerId) {
+      this._debug('Invalid element or pointerId for release');
+      return false;
+    }
+    
+    // Check if pointer capture is supported
+    if (!this.features.pointerCapture) {
+      this._debug('Pointer capture not supported in this browser');
+      return false;
+    }
     
     try {
-      if ('releasePointerCapture' in element) {
+      // Check if releasePointerCapture method exists
+      if (typeof element.releasePointerCapture === 'function') {
         element.releasePointerCapture(pointerId);
-        this._debug(`포인터 캡처 해제: pointerId=${pointerId}`);
+        this._debug(`Pointer capture released: pointerId=${pointerId}, element=${element.tagName || 'element'}`);
         return true;
+      } else {
+        this._debug('releasePointerCapture method not available on element');
       }
     } catch (e) {
-      this._debug('포인터 캡처 해제 실패:', e.message);
+      this._debug('Failed to release pointer capture:', e.message);
     }
     
     return false;
   }
-  
+
   /**
-   * 터치 ID를 추적합니다.
+   * Tracks touch ID
    * @private
-   * @param {number} touchId - 터치 식별자
-   * @param {Object} touchInfo - 터치 정보
+   * @param {number} touchId - Touch identifier
+   * @param {Object} touchInfo - Touch information
    */
   _trackTouch(touchId, touchInfo) {
+    if (touchId === undefined || touchId === null) {
+      this._debug('Invalid touchId for tracking');
+      return;
+    }
+    
+    // Store touch info with timestamp
     this._activeTouches.set(touchId, { 
       ...touchInfo, 
       timestamp: Date.now() 
     });
+    
+    this._debug(`Touch tracked: ID=${touchId}, count=${this._activeTouches.size}`);
   }
   
   /**
-   * 터치 추적을 중지합니다.
+   * Stops tracking touch
    * @private
-   * @param {number} touchId - 터치 식별자
+   * @param {number} touchId - Touch identifier
    */
   _untrackTouch(touchId) {
+    if (touchId === undefined || touchId === null) {
+      this._debug('Invalid touchId for untracking');
+      return;
+    }
+    
+    // Check if touch is being tracked
+    if (!this._activeTouches.has(touchId)) {
+      this._debug(`Touch ID ${touchId} not found for untracking`);
+      return;
+    }
+    
     this._activeTouches.delete(touchId);
+    this._debug(`Touch untracked: ID=${touchId}, remaining=${this._activeTouches.size}`);
   }
   
   /**
-   * 활성 터치 개수를 반환합니다.
+   * Gets active touch count
    * @private
-   * @returns {number} 활성 터치 개수
+   * @returns {number} Active touch count
    */
   _getActiveTouchCount() {
     return this._activeTouches.size;
   }
   
   /**
-   * 통합 포인터 이벤트 리스너를 제거합니다.
-   * @param {number} listenerId - addEventListener로 반환된 리스너 식별자
-   * @returns {boolean} 제거 성공 여부
+   * Gets information about an active touch
+   * @private
+   * @param {number} touchId - Touch identifier
+   * @returns {Object|null} Touch information or null if not found
+   */
+  _getTouchInfo(touchId) {
+    if (touchId === undefined || touchId === null) {
+      return null;
+    }
+    
+    return this._activeTouches.get(touchId) || null;
+  }
+  
+  /**
+   * Removes stale touches (touches that haven't been updated recently)
+   * @private
+   * @param {number} olderThanMs - Remove touches older than this many milliseconds
+   * @returns {number} Number of touches removed
+   */
+  _clearStaleTouches(olderThanMs = 5000) {
+    const now = Date.now();
+    let removed = 0;
+    
+    this._activeTouches.forEach((info, id) => {
+      if (now - info.timestamp > olderThanMs) {
+        this._activeTouches.delete(id);
+        removed++;
+      }
+    });
+    
+    if (removed > 0) {
+      this._debug(`Cleared ${removed} stale touches`);
+    }
+    
+    return removed;
+  }
+
+  /**
+   * Removes a unified pointer event listener
+   * @param {string} listenerId - Listener ID returned by addEventListener
+   * @returns {boolean} Whether removal was successful
    */
   removeEventListener(listenerId) {
+    // Check if listener exists
     const listenerInfo = this.eventListeners.get(listenerId);
     if (!listenerInfo) {
-      this._debug(`리스너 제거 실패: ID ${listenerId}에 해당하는 리스너를 찾을 수 없습니다.`);
+      this._debug(`Failed to remove listener: ID ${listenerId} not found.`);
       return false;
     }
 
     try {
-      // 네이티브 이벤트 리스너 제거
-      this._debug(`리스너 제거 시작: ID=${listenerId}, 유형=${listenerInfo.eventType}, 요소=${listenerInfo.element}`);
+      // Remove native event listeners
+      this._debug(`Starting listener removal: ID=${listenerId}, type=${listenerInfo.eventType}, element=${listenerInfo.element?.tagName || 'element'}`);
       
-      // 각 네이티브 리스너에 대해 개별적으로 처리
+      // Process each native listener
       if (Array.isArray(listenerInfo.nativeListeners)) {
         listenerInfo.nativeListeners.forEach(({ type, handler, element, options }) => {
           if (element && typeof element.removeEventListener === 'function') {
             try {
-              // handler가 정의되어 있는지 확인
+              // Check if handler is defined
               if (typeof handler === 'function') {
-                // 이벤트 리스너 제거
+                // Remove event listener
                 element.removeEventListener(type, handler, options || {});
-                this._debug(`- 네이티브 리스너 제거 성공: 요소=${element.tagName || element}, 유형=${type}`);
+                this._debug(`- Native listener removed: element=${element.tagName || 'element'}, type=${type}`);
               } else {
-                this._debug(`- 핸들러 함수 없음: 요소=${element.tagName || element}, 유형=${type}`);
+                this._debug(`- Handler function missing: element=${element.tagName || 'element'}, type=${type}`);
               }
             } catch (removeError) {
-              this._debug(`- 네이티브 리스너 제거 중 예외 발생: ${removeError.message}`);
+              this._debug(`- Error removing native listener: ${removeError.message}`);
             }
           } else {
-            this._debug(`- 유효하지 않은 요소 또는 removeEventListener 메서드 없음`);
+            this._debug(`- Invalid element or removeEventListener method missing`);
           }
         });
       } else {
-        this._debug(`- nativeListeners 배열이 존재하지 않음`);
+        this._debug(`- nativeListeners array not found`);
       }
 
-      // 상태 정리
+      // Clean up state based on event type
       const state = listenerInfo.state;
       if (state) {
-        // 타이머 정리
+        // Clear any timers
         if (state.timerId) {
           clearTimeout(state.timerId);
           state.timerId = null;
         }
         
-        // 포인터 캡처 해제
-        if (state.capturedPointer && listenerInfo.element && 'releasePointerCapture' in listenerInfo.element) {
-          try {
-            listenerInfo.element.releasePointerCapture(state.capturedPointer);
-            this._debug(`- 캡처된 포인터 해제: ID=${state.capturedPointer}`);
-          } catch (e) {
-            this._debug(`- 포인터 캡처 해제 실패: ${e.message}`);
+        // Cancel any animations
+        if (state.inertiaAnimation) {
+          cancelAnimationFrame(state.inertiaAnimation);
+          state.inertiaAnimation = null;
+        }
+        
+        // Handle drag state
+        if (state.drag) {
+          if (state.drag.inertiaAnimation) {
+            cancelAnimationFrame(state.drag.inertiaAnimation);
+            state.drag.inertiaAnimation = null;
+          }
+          
+          // Release pointer capture for drag
+          if (state.drag.capturedPointer && 
+              listenerInfo.element && 
+              this.features.pointerCapture) {
+            try {
+              listenerInfo.element.releasePointerCapture(state.drag.capturedPointer);
+              this._debug(`- Released captured pointer from drag: ID=${state.drag.capturedPointer}`);
+            } catch (e) {
+              this._debug(`- Failed to release drag pointer capture: ${e.message}`);
+            }
           }
         }
+        
+        // Clean up gesture states
+        ['longclick', 'doubleclick', 'swipe', 'fling', 'rotate', 'pinchzoom'].forEach(gestureType => {
+          if (state[gestureType]) {
+            // Clear gesture timers
+            if (state[gestureType].timerId) {
+              clearTimeout(state[gestureType].timerId);
+              state[gestureType].timerId = null;
+            }
+            
+            // Release pointer capture for gesture
+            if (state[gestureType].pointerId && 
+                listenerInfo.element && 
+                this.features.pointerCapture) {
+              try {
+                listenerInfo.element.releasePointerCapture(state[gestureType].pointerId);
+                this._debug(`- Released captured pointer from ${gestureType}: ID=${state[gestureType].pointerId}`);
+              } catch (e) {
+                this._debug(`- Failed to release ${gestureType} pointer capture: ${e.message}`);
+              }
+            }
+          }
+        });
       }
       
-      // 이벤트 리스너 맵에서 제거
+      // Remove from listener map
       this.eventListeners.delete(listenerId);
       
-      this._debug(`리스너 제거 완료: ID=${listenerId}`);
+      this._debug(`Listener removal complete: ID=${listenerId}`);
       return true;
     } catch (error) {
-      this._debug(`리스너 제거 중 오류: ID=${listenerId}, 오류=${error.message}`);
-      // 오류가 발생해도 맵에서 항목 제거 시도
+      this._debug(`Error during listener removal: ID=${listenerId}, error=${error.message}`);
+      // Try to remove from map even if error occurred
       try {
         this.eventListeners.delete(listenerId);
       } catch (cleanupError) {
-        this._debug(`- 상태 정리 중 추가 오류: ${cleanupError.message}`);
+        this._debug(`- Additional error during cleanup: ${cleanupError.message}`);
       }
       return false;
     }
   }
 
   /**
-   * 요소에 등록된 모든 이벤트 리스너를 제거합니다.
-   * @param {HTMLElement} element - 이벤트 리스너를 제거할 요소
-   * @returns {number} 제거된 리스너 수
+   * Removes all event listeners from an element
+   * @param {HTMLElement} element - Element to remove listeners from
+   * @returns {number} Number of listeners removed
    */
   removeAllEventListeners(element) {
-    if (!element) return 0;
+    if (!element) {
+      this._debug('Cannot remove listeners from null/undefined element');
+      return 0;
+    }
     
-    // 제거할 리스너 ID 목록 수집
+    // Collect listener IDs to remove
     const listenerIdsToRemove = [];
     
     this.eventListeners.forEach((listenerInfo, listenerId) => {
@@ -2350,40 +2889,65 @@ class UnifiedPointerEvents {
       }
     });
     
-    // 수집한 ID 목록 로깅
-    this._debug(`요소의 모든 리스너 제거 시작: 요소=${element.tagName || element}, ID 수=${listenerIdsToRemove.length}`);
+    // Log collected IDs
+    this._debug(`Starting removal of all listeners: element=${element.tagName || 'element'}, ID count=${listenerIdsToRemove.length}`);
     
-    // 직접 네이티브 이벤트 리스너 제거 시도 (강제 정리)
+    // Try direct native event listener removal (forced cleanup)
     try {
-      // 모든 가능한 이벤트 유형에 대해 정리 시도
+      // List of all possible event types we might have registered
       const allPossibleEvents = [
         'pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'pointerleave',
+        'pointerover', 'pointerout', 'pointerenter', 'pointerleave',
         'gotpointercapture', 'lostpointercapture',
-        'mousedown', 'mousemove', 'mouseup', 'mouseleave',
+        'mousedown', 'mousemove', 'mouseup', 'mouseleave', 'mouseenter',
+        'mouseover', 'mouseout', 'click', 'dblclick',
         'touchstart', 'touchmove', 'touchend', 'touchcancel',
-        'wheel' // 회전, 핀치줌 이벤트를 위한 wheel 이벤트 추가
+        'wheel', 'contextmenu'
       ];
       
-      // 기존 모든 핸들러를 가져와서 제거 시도
+      // Get all existing handlers and try to remove them
+      const handlersToRemove = new Set();
+      
+      // Collect all handlers first
       this.eventListeners.forEach((info, id) => {
         if (info.element === element && Array.isArray(info.nativeListeners)) {
-          info.nativeListeners.forEach(({ type, handler, options }) => {
+          info.nativeListeners.forEach(({ type, handler }) => {
             if (typeof handler === 'function') {
-              try {
-                element.removeEventListener(type, handler, options || {});
-                this._debug(`- 직접 네이티브 리스너 제거: 유형=${type}`);
-              } catch (err) {
-                this._debug(`- 직접 제거 시도 중 오류: ${err.message}`);
-              }
+              handlersToRemove.add({type, handler});
             }
           });
         }
       });
+      
+      // Then remove them
+      handlersToRemove.forEach(({type, handler}) => {
+        try {
+          element.removeEventListener(type, handler, false);
+          element.removeEventListener(type, handler, true);
+          this._debug(`- Direct native listener removal: type=${type}`);
+        } catch (err) {
+          this._debug(`- Error during direct removal: ${err.message}`);
+        }
+      });
+      
+      // Also try to remove listeners for all possible events with empty handlers
+      // This is a last-resort cleanup that might help in some edge cases
+      if (listenerIdsToRemove.length > 0) {
+        const emptyHandler = () => {};
+        allPossibleEvents.forEach(eventType => {
+          try {
+            element.removeEventListener(eventType, emptyHandler, false);
+            element.removeEventListener(eventType, emptyHandler, true);
+          } catch (err) {
+            // Ignore errors for the empty handler removal
+          }
+        });
+      }
     } catch (err) {
-      this._debug(`직접 리스너 제거 중 오류: ${err.message}`);
+      this._debug(`Error during direct listener removal: ${err.message}`);
     }
     
-    // 수집된 리스너 제거
+    // Remove collected listeners using our standard method
     let successCount = 0;
     for (const id of listenerIdsToRemove) {
       if (this.removeEventListener(id)) {
@@ -2391,89 +2955,293 @@ class UnifiedPointerEvents {
       }
     }
     
-    this._debug(`요소의 모든 리스너 제거 완료: 요소=${element.tagName || element}, 성공=${successCount}/${listenerIdsToRemove.length}`);
-    return successCount;
-  }
-  
-  /**
-   * 모든 이벤트 리스너를 제거하고 리소스를 정리합니다.
-   */
-  dispose() {
-    // 모든 리스너 제거
-    this.eventListeners.forEach((_, listenerId) => {
-      this.removeEventListener(listenerId);
+    // Check for any remaining listeners that might have been missed
+    let remainingCount = 0;
+    this.eventListeners.forEach((info, id) => {
+      if (info.element === element) {
+        remainingCount++;
+      }
     });
     
-    // 맵 비우기
-    this.eventListeners.clear();
-    this._activeTouches.clear();
+    if (remainingCount > 0) {
+      this._debug(`Warning: ${remainingCount} listeners still attached to element after cleanup`);
+    }
     
-    this._debug('모든 리소스 정리 완료');
+    this._debug(`All element listeners removed: element=${element.tagName || 'element'}, success=${successCount}/${listenerIdsToRemove.length}`);
+    return successCount;
+  }
+
+  /**
+   * Disposes all resources and removes all event listeners
+   */
+  dispose() {
+    this._debug('Starting complete library disposal');
+    
+    // Create a copy of listener IDs to avoid modification during iteration
+    const listenerIds = Array.from(this.eventListeners.keys());
+    
+    // Remove all listeners one by one
+    let successCount = 0;
+    let failureCount = 0;
+    
+    for (const id of listenerIds) {
+      try {
+        if (this.removeEventListener(id)) {
+          successCount++;
+        } else {
+          failureCount++;
+        }
+      } catch (error) {
+        this._debug(`Error removing listener ${id} during dispose: ${error.message}`);
+        failureCount++;
+      }
+    }
+    
+    // Final cleanup of any remaining listeners
+    try {
+      this.eventListeners.forEach((listenerInfo, id) => {
+        // Try to cleanup any remaining native listeners directly
+        if (listenerInfo.element && Array.isArray(listenerInfo.nativeListeners)) {
+          listenerInfo.nativeListeners.forEach(({ type, handler, element, options }) => {
+            if (element && typeof handler === 'function') {
+              try {
+                element.removeEventListener(type, handler, options || {});
+              } catch (e) {
+                // Ignore errors in final cleanup
+              }
+            }
+          });
+        }
+      });
+      
+      // Clear all maps and collections
+      this.eventListeners.clear();
+      this._activeTouches.clear();
+      
+      // Cleanup any other resources
+      this.listenerCounter = 0;
+    } catch (error) {
+      this._debug(`Error during final cleanup: ${error.message}`);
+    }
+    
+    this._debug(`Disposal complete: ${successCount} listeners removed successfully, ${failureCount} failures`);
   }
   
   /**
-   * 현재 활성 리스너 수를 반환합니다.
-   * @returns {number} 활성 리스너 수
+   * Gets the number of active listeners
+   * @returns {number} Number of active listeners
    */
   getActiveListenerCount() {
     return this.eventListeners.size;
   }
   
   /**
-   * 디버그 모드를 활성화/비활성화합니다.
-   * @param {boolean} enabled - 활성화 여부
-   * @returns {UnifiedPointerEvents} 메서드 체이닝을 위한 인스턴스 반환
+   * Sets debug mode
+   * @param {boolean} enabled - Whether to enable debug mode
+   * @returns {UnifiedPointerEvents} This instance for chaining
    */
   setDebugMode(enabled) {
     this.debugMode = !!enabled;
-    this._debug(`디버그 모드 ${enabled ? '활성화' : '비활성화'}`);
+    this._debug(`Debug mode ${enabled ? 'enabled' : 'disabled'}`);
     return this;
   }
   
   /**
-   * 현재 등록된 모든 이벤트 리스너 목록을 반환합니다.
-   * @returns {Array} 리스너 정보 배열
+   * Gets a list of all registered event listeners
+   * @returns {Array} Array of listener info objects
    */
   getRegisteredListeners() {
     const listeners = [];
     this.eventListeners.forEach((info, id) => {
       listeners.push({
         id,
-        element: info.element,
+        element: info.element?.tagName || 'element',
         eventType: info.eventType,
-        options: info.options
+        options: { ...info.options }, // Clone options to avoid external modification
+        registrationTime: info.registrationTime
       });
     });
     return listeners;
   }
   
   /**
-   * 특정 요소에 등록된 모든 이벤트 리스너를 정리합니다.
-   * @param {HTMLElement} element - 대상 요소
-   * @returns {number} 제거된 리스너 수
+   * Removes all event listeners from an element
+   * @param {HTMLElement} element - Target element
+   * @returns {number} Number of listeners removed
    */
   cleanupElementListeners(element) {
     return this.removeAllEventListeners(element);
   }
   
   /**
-   * 현재 리스너 상태에 대한 상세 정보를 반환합니다.
-   * @returns {Object} 상태 정보
+   * Gets detailed status information about the library
+   * @returns {Object} Status information
    */
   getStatus() {
+    // Count listeners by type
+    const listenersByType = {};
+    this.eventListeners.forEach(info => {
+      const type = info.eventType;
+      listenersByType[type] = (listenersByType[type] || 0) + 1;
+    });
+    
+    // Collect browser capabilities
+    const capabilities = { ...this.features };
+    
     return {
+      version: '1.4.0',
       listenerCount: this.eventListeners.size,
-      activeTouchCount: this._activeTouches.size
+      activeTouchCount: this._activeTouches.size,
+      listenersByType,
+      browserCapabilities: capabilities,
+      memoryUsage: this._getMemoryUsage()
+    };
+  }
+  
+  /**
+   * Estimates memory usage of the library
+   * @private
+   * @returns {Object} Memory usage information
+   */
+  _getMemoryUsage() {
+    // This is a very rough estimate
+    return {
+      listeners: this.eventListeners.size,
+      touchTracking: this._activeTouches.size,
+      // Each listener might consume roughly 2-5KB of memory with handler functions and state
+      estimatedBytes: this.eventListeners.size * 3000 + this._activeTouches.size * 500
+    };
+  }
+
+  /**
+   * Utility method to normalize an angle to 0-360 degree range
+   * @param {number} angle - Angle in degrees
+   * @returns {number} Normalized angle (0-360)
+   */
+  normalizeAngle(angle) {
+    let normalized = angle % 360;
+    if (normalized < 0) {
+      normalized += 360;
+    }
+    return normalized;
+  }
+  
+  /**
+   * Utility method to calculate distance between two points
+   * @param {number} x1 - First point X coordinate
+   * @param {number} y1 - First point Y coordinate
+   * @param {number} x2 - Second point X coordinate
+   * @param {number} y2 - Second point Y coordinate
+   * @returns {number} Distance between the points
+   */
+  calculateDistance(x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  
+  /**
+   * Utility method to determine if a point is inside an element
+   * @param {number} x - Point X coordinate
+   * @param {number} y - Point Y coordinate
+   * @param {HTMLElement} element - Element to check
+   * @returns {boolean} Whether the point is inside the element
+   */
+  isPointInElement(x, y, element) {
+    if (!element) return false;
+    
+    try {
+      const rect = element.getBoundingClientRect();
+      return (
+        x >= rect.left &&
+        x <= rect.right &&
+        y >= rect.top &&
+        y <= rect.bottom
+      );
+    } catch (e) {
+      this._debug('Error checking if point is in element:', e.message);
+      return false;
+    }
+  }
+  
+  /**
+   * Utility method to throttle a function call
+   * @param {Function} fn - Function to throttle
+   * @param {number} limit - Time limit in ms
+   * @returns {Function} Throttled function
+   */
+  throttle(fn, limit = 16) {
+    let lastCall = 0;
+    return function(...args) {
+      const now = Date.now();
+      if (now - lastCall >= limit) {
+        lastCall = now;
+        return fn.apply(this, args);
+      }
+    };
+  }
+  
+  /**
+   * Detects device type based on user agent and features
+   * @returns {Object} Device information
+   */
+  detectDevice() {
+    const ua = navigator.userAgent;
+    const platform = navigator.platform;
+    
+    // Device type detection
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+    const isTablet = /(tablet|ipad|playbook|silk)|(android(?!.*mobile))/i.test(ua);
+    const isDesktop = !isMobile && !isTablet;
+    
+    // OS detection
+    const isIOS = /iPad|iPhone|iPod/.test(platform) || 
+                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isAndroid = /Android/.test(ua);
+    const isWindows = /Win/.test(platform);
+    const isMacOS = /Mac/.test(platform) && !isIOS;
+    const isLinux = /Linux/.test(platform) && !isAndroid;
+    
+    return {
+      isMobile,
+      isTablet,
+      isDesktop,
+      isIOS,
+      isAndroid,
+      isWindows,
+      isMacOS,
+      isLinux,
+      supportsTouchEvents: this.features.touch,
+      supportsPointerEvents: this.features.pointerEvents,
+      supportsMouseEvents: this.features.mouse
     };
   }
 }
 
-// 단일 인스턴스 생성 및 내보내기
+// Create single instance and export
 const unifiedPointerEvents = new UnifiedPointerEvents();
 
-// 모듈로 내보내기
+// Set up automatic cleanup on page unload to prevent memory leaks
+if (typeof window !== 'undefined') {
+  window.addEventListener('unload', () => {
+    unifiedPointerEvents.dispose();
+  });
+  
+  // Warning for older API users accessing via deprecated method names
+  // This provides backward compatibility with earlier versions
+  if (typeof window.PointerEvents === 'undefined') {
+    window.PointerEvents = {
+      get instance() {
+        console.warn('PointerEvents.instance is deprecated, use unifiedPointerEvents instead');
+        return unifiedPointerEvents;
+      }
+    };
+  }
+}
+
+// Export module
 if (typeof module !== 'undefined' && typeof module.exports !== 'undefined') {
   module.exports = unifiedPointerEvents;
-} else {
+} else if (typeof window !== 'undefined') {
   window.unifiedPointerEvents = unifiedPointerEvents;
 }
